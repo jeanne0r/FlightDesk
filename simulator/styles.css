@@ -97,8 +97,8 @@ select {
   overflow: hidden;
   border-radius: 50%;
   background: #020503;
-  opacity: 0.92;
-  filter: grayscale(1) contrast(2.35) brightness(1.05) sepia(1) hue-rotate(62deg) saturate(5.6);
+  opacity: 1;
+  filter: grayscale(1) contrast(2.5) brightness(1.18) sepia(1) hue-rotate(62deg) saturate(6);
 }
 
 .map-layer::after {
@@ -106,8 +106,8 @@ select {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at center, rgba(2, 8, 4, 0.01), rgba(2, 5, 3, 0.24) 84%),
-    linear-gradient(180deg, rgba(82, 224, 121, 0.08), rgba(2, 5, 3, 0.10));
+    radial-gradient(circle at center, rgba(2, 8, 4, 0), rgba(2, 5, 3, 0.16) 86%),
+    linear-gradient(180deg, rgba(82, 224, 121, 0.04), rgba(2, 5, 3, 0.06));
 }
 
 .map-layer img {
@@ -115,6 +115,7 @@ select {
   width: 256px;
   height: 256px;
   max-width: none;
+  opacity: 1;
 }
 
 .screen-glass {

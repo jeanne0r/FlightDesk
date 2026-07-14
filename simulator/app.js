@@ -224,13 +224,13 @@ function drawRadar() {
   const glow = state.night ? 1 : 0.72;
 
   ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "rgba(2, 5, 3, 0.28)";
+  ctx.fillStyle = "rgba(2, 5, 3, 0.12)";
   ctx.fillRect(0, 0, size, size);
 
   const bg = ctx.createRadialGradient(center, center, 0, center, center, radius * 1.15);
-  bg.addColorStop(0, `rgba(24, 112, 43, ${0.05 * intensity})`);
-  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.34)");
-  bg.addColorStop(1, "rgba(2, 5, 3, 0.62)");
+  bg.addColorStop(0, `rgba(24, 112, 43, ${0.03 * intensity})`);
+  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.22)");
+  bg.addColorStop(1, "rgba(2, 5, 3, 0.48)");
   ctx.fillStyle = bg;
   ctx.beginPath();
   ctx.arc(center, center, radius * 1.05, 0, Math.PI * 2);
@@ -414,7 +414,7 @@ function updatePanel() {
   const selected = state.aircraft.find((aircraft) => aircraft.id === state.selectedId);
   elements.count.textContent = visible.length;
   elements.rangeLabel.textContent = state.rangeKm;
-  elements.modeLabel.textContent = modeTitle(state.mode);
+  elements.modeLabel.textContent = state.trafficSource === "live" ? "OpenSky" : "Sim";
   elements.postalLabel.textContent = state.postalCode || "—";
   document.querySelector(".panel-header p:last-child").textContent =
     state.trafficSource === "live"
@@ -569,7 +569,9 @@ function renderMapTiles() {
   const tileCount = 2 ** zoom;
   const fragment = document.createDocumentFragment();
 
-  mapLayer.replaceChildren();
+  while (mapLayer.firstChild) {
+    mapLayer.removeChild(mapLayer.firstChild);
+  }
 
   for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
     if (tileY < 0 || tileY >= tileCount) continue;
@@ -579,6 +581,7 @@ function renderMapTiles() {
       img.alt = "";
       img.decoding = "async";
       img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
       img.src = `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${tileY}.png`;
       img.style.left = `${Math.round(tileX * 256 - topLeft.x)}px`;
       img.style.top = `${Math.round(tileY * 256 - topLeft.y)}px`;
@@ -626,14 +629,27 @@ async function setPostalCode(postalCode) {
     if (!center) throw new Error("Postal code not found");
     state.mapCenter = center;
     elements.mapStatus.textContent = `Carte réelle centrée sur ${cleanCode} ${center.label}.`;
+    fetchLiveTraffic(true);
   } catch (error) {
     if (lookupId !== postalLookupId) return;
     state.mapCenter = swissPostalCenters["1000"];
     elements.mapStatus.textContent = `Code postal non trouvé, carte centrée sur 1000 Lausanne.`;
+    fetchLiveTraffic(true);
   }
 
-  renderMapTiles();
-  fetchLiveTraffic(true);
+  try {
+    renderMapTiles();
+  } catch (error) {
+    elements.mapStatus.textContent = `Carte non affichée, trafic live toujours actif.`;
+  }
 }
 
 window.addEventListener("resize", renderMapTiles);
+
+window.addEventListener("error", (event) => {
+  state.trafficStatus = `Erreur preview: ${event.message}`;
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  state.trafficStatus = `Erreur preview: ${event.reason?.message || event.reason}`;
+});
