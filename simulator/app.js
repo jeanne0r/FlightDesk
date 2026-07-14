@@ -74,6 +74,8 @@ const demoFlights = [
 ];
 
 const trafficPollMs = 18000;
+let postalInputTimer = null;
+let postalLookupId = 0;
 
 const elements = {
   count: document.getElementById("aircraft-count"),
@@ -90,7 +92,8 @@ const elements = {
   selectedHeading: document.getElementById("selected-heading"),
   favoriteToggle: document.getElementById("favorite-toggle"),
   assistantAnswer: document.getElementById("assistant-answer"),
-  mapStatus: document.getElementById("map-status")
+  mapStatus: document.getElementById("map-status"),
+  trafficSummary: document.getElementById("traffic-summary")
 };
 
 document.getElementById("postal-control").value = state.postalCode;
@@ -421,7 +424,7 @@ function updatePanel() {
   elements.rangeLabel.textContent = state.rangeKm;
   elements.modeLabel.textContent = state.trafficSource === "live" ? "OpenSky" : "Sim";
   elements.postalLabel.textContent = state.postalCode || "—";
-  document.querySelector(".panel-header p:last-child").textContent =
+  elements.trafficSummary.textContent =
     state.trafficSource === "live"
       ? `Données trafic live via OpenSky. ${state.trafficStatus}.`
       : `Données trafic simulées. ${state.trafficStatus}.`;
@@ -483,7 +486,6 @@ document.getElementById("range-control").addEventListener("change", (event) => {
   fetchLiveTraffic(true);
 });
 
-let postalInputTimer = null;
 document.getElementById("postal-control").addEventListener("input", (event) => {
   const nextCode = event.target.value.trim() || "1000";
   state.postalCode = nextCode;
@@ -618,7 +620,6 @@ async function geocodePostalCode(postalCode) {
   };
 }
 
-let postalLookupId = 0;
 async function setPostalCode(postalCode) {
   const cleanCode = postalCode.replace(/[^\dA-Za-z -]/g, "").slice(0, 10) || "1000";
   const lookupId = ++postalLookupId;
