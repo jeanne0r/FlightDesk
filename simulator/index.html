@@ -43,6 +43,10 @@
             <span>Mode</span>
             <strong id="mode-label">Radar</strong>
           </div>
+          <div>
+            <span>Code postal</span>
+            <strong id="postal-label">1000</strong>
+          </div>
         </section>
 
         <section class="selected-card" aria-label="Vol sélectionné">
@@ -64,6 +68,10 @@
         </section>
 
         <section class="controls" aria-label="Réglages">
+          <label>
+            Code postal
+            <input id="postal-control" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="10" value="1000">
+          </label>
           <label>
             Rayon radar
             <select id="range-control">

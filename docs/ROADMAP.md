@@ -12,6 +12,7 @@
 
 ## v0.2 — Écran et tactile
 - [x] simulateur web de l'interface
+- [x] code postal et carte radar en filigrane
 - [ ] LVGL
 - [ ] radar vert 480 × 480
 - [ ] rémanence du balayage

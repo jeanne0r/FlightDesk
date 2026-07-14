@@ -7,11 +7,13 @@ const state = {
   volume: 55,
   night: true,
   muted: false,
+  postalCode: localStorage.getItem("flightdesk:postalCode") || "1000",
   mode: "radar",
   sweepDeg: 0,
   selectedId: null,
   favorites: new Set(JSON.parse(localStorage.getItem("flightdesk:favorites") || "[]")),
-  aircraft: []
+  aircraft: [],
+  mapPaths: []
 };
 
 const airlines = {
@@ -40,6 +42,7 @@ const elements = {
   count: document.getElementById("aircraft-count"),
   rangeLabel: document.getElementById("range-label"),
   modeLabel: document.getElementById("mode-label"),
+  postalLabel: document.getElementById("postal-label"),
   selectedEmpty: document.getElementById("selected-empty"),
   selectedFlight: document.getElementById("selected-flight"),
   selectedCallsign: document.getElementById("selected-callsign"),
@@ -51,6 +54,9 @@ const elements = {
   favoriteToggle: document.getElementById("favorite-toggle"),
   assistantAnswer: document.getElementById("assistant-answer")
 };
+
+document.getElementById("postal-control").value = state.postalCode;
+state.mapPaths = buildMapPaths(state.postalCode);
 
 function saveFavorites() {
   localStorage.setItem("flightdesk:favorites", JSON.stringify([...state.favorites]));
@@ -107,6 +113,8 @@ function drawRadar() {
   ctx.arc(center, center, radius * 1.05, 0, Math.PI * 2);
   ctx.fill();
 
+  drawMapWatermark(center, radius, intensity);
+
   ctx.save();
   ctx.translate(center, center);
   ctx.strokeStyle = `rgba(82, 224, 121, ${0.17 * glow})`;
@@ -130,6 +138,93 @@ function drawRadar() {
   drawHome(center);
   drawAircraft();
   drawOverlayText(center);
+}
+
+function postalSeed(postalCode) {
+  return String(postalCode || "1000").split("").reduce((seed, char) => {
+    return (seed * 31 + char.charCodeAt(0)) >>> 0;
+  }, 17);
+}
+
+function seededRandom(seed) {
+  let value = seed >>> 0;
+  return () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+
+function buildMapPaths(postalCode) {
+  const random = seededRandom(postalSeed(postalCode));
+  const paths = [];
+  const roadCount = 9;
+
+  for (let i = 0; i < roadCount; i += 1) {
+    const vertical = random() > 0.45;
+    const base = -0.86 + random() * 1.72;
+    const drift = -0.18 + random() * 0.36;
+    const points = [];
+    for (let step = 0; step < 6; step += 1) {
+      const t = -0.98 + step * 0.392;
+      const bend = Math.sin((step + random() * 2) * 1.35 + i) * 0.07;
+      points.push(vertical
+        ? { x: base + bend + drift * step * 0.18, y: t }
+        : { x: t, y: base + bend + drift * step * 0.18 });
+    }
+    paths.push({ kind: i % 4 === 0 ? "major" : "minor", points });
+  }
+
+  const river = [];
+  for (let step = 0; step < 8; step += 1) {
+    const t = -1 + step * 0.285;
+    river.push({
+      x: t,
+      y: Math.sin(t * 3.1 + random() * 2.2) * 0.18 + 0.12
+    });
+  }
+  paths.push({ kind: "river", points: river });
+
+  return paths;
+}
+
+function drawMapWatermark(center, radius, intensity) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(center, center, radius * 1.02, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.globalCompositeOperation = "screen";
+
+  state.mapPaths.forEach((path) => {
+    const alpha = path.kind === "major" ? 0.17 : path.kind === "river" ? 0.13 : 0.09;
+    ctx.strokeStyle = path.kind === "river"
+      ? `rgba(82, 224, 121, ${alpha * intensity})`
+      : `rgba(141, 255, 111, ${alpha * intensity})`;
+    ctx.lineWidth = path.kind === "major" ? 3 : path.kind === "river" ? 5 : 1.5;
+    ctx.beginPath();
+    path.points.forEach((point, index) => {
+      const x = center + point.x * radius * 0.92;
+      const y = center + point.y * radius * 0.92;
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = `rgba(82, 224, 121, ${0.08 * intensity})`;
+  ctx.lineWidth = 1;
+  for (let i = -2; i <= 2; i += 1) {
+    const offset = i * radius * 0.22;
+    ctx.beginPath();
+    ctx.moveTo(center - radius, center + offset);
+    ctx.lineTo(center + radius, center + offset + radius * 0.08);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(center + offset, center - radius);
+    ctx.lineTo(center + offset - radius * 0.08, center + radius);
+    ctx.stroke();
+  }
+
+  ctx.restore();
 }
 
 function drawSweep(center, radius, intensity) {
@@ -283,6 +378,7 @@ function updatePanel() {
   elements.count.textContent = visible.length;
   elements.rangeLabel.textContent = state.rangeKm;
   elements.modeLabel.textContent = modeTitle(state.mode);
+  elements.postalLabel.textContent = state.postalCode || "—";
 
   if (!selected) {
     elements.selectedEmpty.classList.remove("hidden");
@@ -337,6 +433,12 @@ canvas.addEventListener("click", (event) => {
 
 document.getElementById("range-control").addEventListener("change", (event) => {
   state.rangeKm = Number(event.target.value);
+});
+
+document.getElementById("postal-control").addEventListener("input", (event) => {
+  state.postalCode = event.target.value.trim() || "1000";
+  state.mapPaths = buildMapPaths(state.postalCode);
+  localStorage.setItem("flightdesk:postalCode", state.postalCode);
 });
 
 document.getElementById("brightness-control").addEventListener("input", (event) => {

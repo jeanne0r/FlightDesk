@@ -22,8 +22,8 @@ annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 - Favoris pour mettre certains vols en avant.
 - Assistant vocal Gemini pour interroger les avions visibles.
 - Annonces vocales via micro I2S INMP441, ampli MAX98357A et haut-parleur.
-- Réglages embarqués : position maison, rayon, intensité radar, mode nuit,
-  volume, muet, langue, Wi-Fi et OTA.
+- Réglages embarqués : code postal, position maison, rayon, intensité radar,
+  mode nuit, volume, muet, langue, Wi-Fi et OTA.
 
 ## Matériel prévu
 
@@ -56,8 +56,9 @@ python3 -m http.server 4173
 
 Puis ouvrir `http://127.0.0.1:4173`.
 
-Le simulateur couvre déjà le radar animé, les avions simulés, la sélection d'un
-vol, les favoris, les réglages principaux et une réponse Gemini simulée.
+Le simulateur couvre déjà le radar animé, la carte en filigrane vert, les avions
+simulés, la sélection d'un vol, les favoris, le code postal, les réglages
+principaux et une réponse Gemini simulée.
 
 ## Structure
 

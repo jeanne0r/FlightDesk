@@ -1,5 +1,6 @@
 #include "settings_store.h"
 #include <Preferences.h>
+#include <string.h>
 
 namespace flightdesk {
 
@@ -13,6 +14,7 @@ Settings SettingsStore::load() {
     Settings s;
     s.home_latitude = prefs.getFloat("lat", s.home_latitude);
     s.home_longitude = prefs.getFloat("lon", s.home_longitude);
+    prefs.getString("postal", s.postal_code, sizeof(s.postal_code));
     s.radar_range_km = prefs.getUShort("range", s.radar_range_km);
     s.volume_percent = prefs.getUChar("volume", s.volume_percent);
     s.muted = prefs.getBool("muted", s.muted);
@@ -29,6 +31,7 @@ bool SettingsStore::save(const Settings& s) {
     bool ok = true;
     ok &= prefs.putFloat("lat", s.home_latitude) > 0;
     ok &= prefs.putFloat("lon", s.home_longitude) > 0;
+    ok &= prefs.putString("postal", s.postal_code) == strlen(s.postal_code);
     ok &= prefs.putUShort("range", s.radar_range_km) > 0;
     ok &= prefs.putUChar("volume", s.volume_percent) > 0;
     ok &= prefs.putBool("muted", s.muted) > 0;
