@@ -232,13 +232,13 @@ function drawRadar() {
   const glow = state.night ? 1 : 0.72;
 
   ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "rgba(2, 5, 3, 0.34)";
+  ctx.fillStyle = "rgba(2, 5, 3, 0.24)";
   ctx.fillRect(0, 0, size, size);
 
   const bg = ctx.createRadialGradient(center, center, 0, center, center, radius * 1.15);
-  bg.addColorStop(0, `rgba(24, 112, 43, ${0.08 * intensity})`);
-  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.58)");
-  bg.addColorStop(1, "rgba(2, 5, 3, 0.82)");
+  bg.addColorStop(0, `rgba(24, 112, 43, ${0.07 * intensity})`);
+  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.45)");
+  bg.addColorStop(1, "rgba(2, 5, 3, 0.70)");
   ctx.fillStyle = bg;
   ctx.beginPath();
   ctx.arc(center, center, radius * 1.05, 0, Math.PI * 2);
