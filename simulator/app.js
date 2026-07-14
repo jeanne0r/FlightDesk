@@ -48,6 +48,8 @@ const state = {
   popupBounds: null,
   popupCloseBounds: null,
   popupFavoriteBounds: null,
+  aircraftDetails: new Map(),
+  aircraftImages: new Map(),
   settingsHitZones: [],
   navHitZones: [],
   mode: "radar",
@@ -683,6 +685,7 @@ canvas.addEventListener("click", (event) => {
   if (nearest) {
     state.selectedId = nearest.id;
     state.popupOpen = true;
+    ensureAircraftDetails(nearest.id);
   }
 });
 
@@ -698,6 +701,52 @@ function canvasPoint(event) {
     x: (event.clientX - rect.left) * (canvas.width / rect.width),
     y: (event.clientY - rect.top) * (canvas.height / rect.height)
   };
+}
+
+function getAircraftDetails(id) {
+  return state.aircraftDetails.get(String(id).toLowerCase());
+}
+
+function ensureAircraftDetails(id) {
+  const hex = String(id || "").toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(hex)) return;
+  const current = state.aircraftDetails.get(hex);
+  if (current?.status === "ready" || current?.status === "loading") return;
+
+  state.aircraftDetails.set(hex, { status: "loading" });
+  fetch(apiUrl(`/api/aircraft?hex=${encodeURIComponent(hex)}`), { cache: "no-store" })
+    .then((response) => response.json().then((payload) => ({ response, payload })))
+    .then(({ response, payload }) => {
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      state.aircraftDetails.set(hex, {
+        status: "ready",
+        photo: payload.photo || null,
+        type: payload.type || null,
+        registration: payload.registration || null,
+        credit: payload.credit || null
+      });
+      if (payload.photo) ensureAircraftImage(hex, payload.photo);
+    })
+    .catch(() => {
+      state.aircraftDetails.set(hex, { status: "error", photo: null, type: null, registration: null, credit: null });
+    });
+}
+
+function ensureAircraftImage(id, src) {
+  const hex = String(id || "").toLowerCase();
+  const current = state.aircraftImages.get(hex);
+  if (current?.src === src) return current;
+
+  const entry = { status: "loading", src, image: new Image() };
+  entry.image.onload = () => {
+    entry.status = "ready";
+  };
+  entry.image.onerror = () => {
+    entry.status = "error";
+  };
+  entry.image.src = src;
+  state.aircraftImages.set(hex, entry);
+  return entry;
 }
 
 document.getElementById("range-control").addEventListener("change", (event) => {
@@ -891,14 +940,16 @@ function drawScreenPopup(center, radius) {
   if (state.mode !== "radar" || !state.popupOpen || !state.selectedId) return;
   const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
   if (!aircraft) return;
+  ensureAircraftDetails(aircraft.id);
+  const details = getAircraftDetails(aircraft.id);
 
-  const width = radius * 0.96;
-  const height = radius * 0.74;
+  const width = radius * 1.18;
+  const height = radius * 0.80;
   const x = center - width / 2;
-  const y = center - radius * 0.18;
+  const y = center - radius * 0.14;
   state.popupBounds = { x, y, width, height };
-  state.popupFavoriteBounds = { x: x + width - 92, y: y + 12, width: 42, height: 42 };
-  state.popupCloseBounds = { x: x + width - 48, y: y + 12, width: 42, height: 42 };
+  state.popupFavoriteBounds = { x: x + width - 82, y: y + 12, width: 36, height: 36 };
+  state.popupCloseBounds = { x: x + width - 42, y: y + 12, width: 36, height: 36 };
 
   ctx.save();
   ctx.fillStyle = "rgba(4, 10, 6, 0.92)";
@@ -917,12 +968,20 @@ function drawScreenPopup(center, radius) {
   ctx.fillText("AVION SÉLECTIONNÉ", x + 16, y + 29);
 
   ctx.fillStyle = "#8dff6f";
-  ctx.font = "700 28px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.callsign, x + 16, y + 70);
+  ctx.font = "700 30px ui-sans-serif, system-ui";
+  fittedText(aircraft.callsign, x + 16, y + 70, width * 0.50);
 
   ctx.fillStyle = "rgba(238, 244, 239, 0.74)";
   ctx.font = "15px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 16, y + 94);
+  fittedText(details?.registration || aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 16, y + 94, width * 0.50);
+
+  ctx.fillStyle = "rgba(238, 244, 239, 0.58)";
+  ctx.font = "700 12px ui-sans-serif, system-ui";
+  fittedText(details?.type || "TYPE EN RECHERCHE", x + 16, y + 114, width * 0.50);
+
+  const photoX = x + width - 124;
+  const photoY = y + 58;
+  drawAircraftPhoto(photoX, photoY, 108, 68, details, aircraft.id);
 
   const metrics = [
     ["DIST", `${Math.round(aircraft.distance)} km`],
@@ -930,24 +989,65 @@ function drawScreenPopup(center, radius) {
     ["VIT", `${Math.round(aircraft.speed)} km/h`],
     ["CAP", `${Math.round(aircraft.heading)}°`]
   ];
-  const cellWidth = (width - 34) / 2;
+  const cellWidth = (width - 34) / 4;
   metrics.forEach((metric, index) => {
-    const col = index % 2;
-    const row = Math.floor(index / 2);
-    const mx = x + 16 + col * cellWidth;
-    const my = y + 122 + row * 38;
+    const mx = x + 16 + index * cellWidth;
+    const my = y + height - 50;
     ctx.fillStyle = "rgba(238, 244, 239, 0.46)";
     ctx.font = "12px ui-sans-serif, system-ui";
     ctx.fillText(metric[0], mx, my);
     ctx.fillStyle = "#eef4ef";
-    ctx.font = "700 16px ui-sans-serif, system-ui";
-    ctx.fillText(metric[1], mx, my + 20);
+    ctx.font = "700 15px ui-sans-serif, system-ui";
+    fittedText(metric[1], mx, my + 20, cellWidth - 8);
   });
 
   drawPopupIconButton(state.popupFavoriteBounds, state.favorites.has(aircraft.id) ? "★" : "☆");
   drawPopupIconButton(state.popupCloseBounds, "×");
 
   ctx.restore();
+}
+
+function fittedText(text, x, y, maxWidth) {
+  const value = String(text || "");
+  if (ctx.measureText(value).width <= maxWidth) {
+    ctx.fillText(value, x, y);
+    return;
+  }
+  let clipped = value;
+  while (clipped.length > 1 && ctx.measureText(`${clipped}…`).width > maxWidth) {
+    clipped = clipped.slice(0, -1);
+  }
+  ctx.fillText(`${clipped}…`, x, y);
+}
+
+function drawAircraftPhoto(x, y, width, height, details, aircraftId) {
+  ctx.save();
+  roundRect(x, y, width, height, 10);
+  ctx.clip();
+  ctx.fillStyle = "rgba(82, 224, 121, 0.08)";
+  ctx.fillRect(x, y, width, height);
+
+  const entry = details?.photo ? ensureAircraftImage(aircraftId, details.photo) : null;
+  if (entry?.status === "ready") {
+    const imageRatio = entry.image.width / entry.image.height;
+    const boxRatio = width / height;
+    const drawHeight = imageRatio > boxRatio ? height : width / imageRatio;
+    const drawWidth = imageRatio > boxRatio ? height * imageRatio : width;
+    ctx.drawImage(entry.image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
+    ctx.fillRect(x, y, width, height);
+  } else {
+    ctx.fillStyle = "rgba(141, 255, 111, 0.62)";
+    ctx.font = "700 11px ui-sans-serif, system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(entry?.status === "loading" ? "PHOTO…" : "SANS PHOTO", x + width / 2, y + height / 2 + 4);
+  }
+
+  ctx.restore();
+  ctx.strokeStyle = "rgba(82, 224, 121, 0.28)";
+  ctx.lineWidth = 1;
+  roundRect(x, y, width, height, 10);
+  ctx.stroke();
 }
 
 function drawPopupIconButton(bounds, label) {

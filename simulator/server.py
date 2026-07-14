@@ -10,10 +10,13 @@ import re
 
 
 OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
+PLANESPOTTERS_URL = "https://api.planespotters.net/pub/photos/hex/{hex_code}"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TRAFFIC_CACHE_SECONDS = 12
+AIRCRAFT_CACHE_SECONDS = 86400
 TILE_CACHE_SECONDS = 86400
 traffic_cache = {}
+aircraft_cache = {}
 tile_cache = {}
 
 
@@ -59,11 +62,54 @@ def opensky_states(lat, lon, range_km):
         }
 
 
+def aircraft_details_from_photo(photo):
+    if not photo:
+        return {"photo": None, "type": None, "registration": None, "credit": None, "link": None}
+
+    link = photo.get("link") or ""
+    aircraft_type = type_from_planespotters_link(link)
+    thumbnail = photo.get("thumbnail_large") or photo.get("thumbnail") or {}
+    return {
+        "photo": (thumbnail.get("src") or "").replace("\\/", "/") or None,
+        "type": aircraft_type,
+        "registration": registration_from_planespotters_link(link),
+        "credit": photo.get("photographer"),
+        "link": link,
+    }
+
+
+def registration_from_planespotters_link(link):
+    match = re.search(r"/photo/\d+/([^/?]+)", link or "")
+    if not match:
+        return None
+    slug = match.group(1)
+    parts = slug.split("-")
+    if len(parts) > 1 and re.fullmatch(r"[a-z0-9]{1,2}", parts[0]):
+        return "-".join(parts[:2]).upper()
+    return "-".join(parts[:2]).upper() if len(parts) > 1 else (parts[0].upper() if parts else None)
+
+
+def type_from_planespotters_link(link):
+    match = re.search(r"/photo/\d+/([^/?]+)", link or "")
+    if not match:
+        return None
+    parts = match.group(1).split("-")
+    makers = {"airbus", "boeing", "embraer", "bombardier", "cessna", "atr", "pilatus", "dassault", "gulfstream"}
+    for index, part in enumerate(parts):
+        if part in makers and index + 1 < len(parts):
+            tail = parts[index:index + 3]
+            return " ".join(piece.upper() if any(char.isdigit() for char in piece) else piece.title() for piece in tail)
+    return None
+
+
 class FlightDeskHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/traffic":
             self.handle_traffic(parsed)
+            return
+        if parsed.path == "/api/aircraft":
+            self.handle_aircraft(parsed)
             return
         if parsed.path.startswith("/api/tile/"):
             self.handle_tile(parsed)
@@ -116,6 +162,34 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def handle_aircraft(self, parsed):
+        query = parse_qs(parsed.query)
+        hex_code = ((query.get("hex") or [""])[0] or "").lower().strip()
+        if not re.fullmatch(r"[0-9a-f]{6}", hex_code):
+            self.write_json({"error": "invalid hex", "photo": None, "type": None}, status=400)
+            return
+
+        now = time()
+        cached = aircraft_cache.get(hex_code)
+        if cached and now - cached["created_at"] < AIRCRAFT_CACHE_SECONDS:
+            self.write_json(cached["payload"])
+            return
+
+        request = Request(PLANESPOTTERS_URL.format(hex_code=hex_code), headers={
+            "Accept": "application/json",
+            "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+        })
+
+        try:
+            with urlopen(request, timeout=8) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+                photo = (raw.get("photos") or [None])[0]
+                payload = aircraft_details_from_photo(photo)
+                aircraft_cache[hex_code] = {"created_at": now, "payload": payload}
+                self.write_json(payload)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
+            self.write_json({"error": str(error), "photo": None, "type": None}, status=502)
 
     def handle_tile(self, parsed):
         match = re.fullmatch(r"/api/tile/(\d+)/(\d+)/(\d+)\.png", parsed.path)
