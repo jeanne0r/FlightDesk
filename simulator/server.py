@@ -68,7 +68,7 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/tile/"):
             self.handle_tile(parsed)
             return
-        if parsed.path in ("/live", "/live.html"):
+        if parsed.path in ("/live", "/live.html") or parsed.path.startswith("/live"):
             self.path = "/index.html"
         super().do_GET()
 
