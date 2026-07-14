@@ -232,13 +232,13 @@ function drawRadar() {
   const glow = state.night ? 1 : 0.72;
 
   ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "rgba(2, 5, 3, 0.12)";
+  ctx.fillStyle = "rgba(2, 5, 3, 0.34)";
   ctx.fillRect(0, 0, size, size);
 
   const bg = ctx.createRadialGradient(center, center, 0, center, center, radius * 1.15);
-  bg.addColorStop(0, `rgba(24, 112, 43, ${0.03 * intensity})`);
-  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.22)");
-  bg.addColorStop(1, "rgba(2, 5, 3, 0.48)");
+  bg.addColorStop(0, `rgba(24, 112, 43, ${0.08 * intensity})`);
+  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.58)");
+  bg.addColorStop(1, "rgba(2, 5, 3, 0.82)");
   ctx.fillStyle = bg;
   ctx.beginPath();
   ctx.arc(center, center, radius * 1.05, 0, Math.PI * 2);
@@ -325,19 +325,23 @@ function drawAircraft() {
     ctx.save();
     ctx.translate(point.x, point.y);
     ctx.rotate(((aircraft.heading - 90) * Math.PI) / 180);
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = "rgba(1, 8, 3, 0.95)";
     ctx.fillStyle = color;
-    ctx.lineWidth = isSelected ? 3 : 2;
+    ctx.lineWidth = isSelected ? 7 : 5;
     ctx.shadowColor = color;
-    ctx.shadowBlur = isSelected ? 18 : 8;
+    ctx.shadowBlur = isSelected ? 24 : 15;
     ctx.beginPath();
-    ctx.moveTo(12, 0);
-    ctx.lineTo(-9, -7);
-    ctx.lineTo(-5, 0);
-    ctx.lineTo(-9, 7);
+    ctx.moveTo(15, 0);
+    ctx.lineTo(-11, -8);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(-11, 8);
     ctx.closePath();
     ctx.stroke();
-    if (isSelected) ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isSelected ? 3 : 2.4;
+    ctx.stroke();
+    ctx.globalAlpha = isSelected ? 0.88 : 0.55;
+    ctx.fill();
     ctx.restore();
 
     if (isSelected) {
