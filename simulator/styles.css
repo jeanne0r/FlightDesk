@@ -88,6 +88,8 @@ select {
   display: block;
   border-radius: 50%;
   background: transparent;
+  touch-action: none;
+  user-select: none;
 }
 
 .map-layer {
