@@ -132,14 +132,7 @@ select {
 }
 
 .device-nav {
-  position: absolute;
-  z-index: 4;
-  left: 9%;
-  right: 9%;
-  bottom: 9%;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
+  display: none;
 }
 
 .nav-button {

@@ -49,6 +49,7 @@ const state = {
   popupCloseBounds: null,
   popupFavoriteBounds: null,
   settingsHitZones: [],
+  navHitZones: [],
   mode: "radar",
   sweepDeg: 0,
   selectedId: null,
@@ -274,6 +275,7 @@ function drawRadar() {
   drawOverlayText(center);
   if (state.mode === "settings") drawSettingsScreen(center, radius);
   drawScreenPopup(center, radius);
+  drawScreenNav(center, radius);
 }
 
 function drawSweep(center, radius, intensity) {
@@ -429,6 +431,41 @@ function modeSubtitle(mode) {
   }[mode] || "Temps réel simulé";
 }
 
+function drawScreenNav(center, radius) {
+  const modes = [
+    ["radar", "RADAR"],
+    ["search", "RECHERCHE"],
+    ["favorites", "FAVORIS"],
+    ["settings", "RÉGLAGES"],
+    ["assistant", "ASSISTANT"]
+  ];
+  const gap = 8;
+  const width = radius * 0.34;
+  const height = 44;
+  const totalWidth = modes.length * width + (modes.length - 1) * gap;
+  const startX = center - totalWidth / 2;
+  const y = center + radius * 0.62;
+  state.navHitZones = [];
+
+  ctx.save();
+  modes.forEach(([mode, label], index) => {
+    const x = startX + index * (width + gap);
+    const active = state.mode === mode;
+    state.navHitZones.push({ type: "nav", value: mode, x, y, width, height });
+    ctx.fillStyle = active ? "rgba(82, 224, 121, 0.15)" : "rgba(2, 7, 3, 0.72)";
+    ctx.strokeStyle = active ? "rgba(141, 255, 111, 0.86)" : "rgba(82, 224, 121, 0.20)";
+    ctx.lineWidth = active ? 2 : 1.2;
+    roundRect(x, y, width, height, 18);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = active ? "#8dff6f" : "rgba(238, 244, 239, 0.72)";
+    ctx.font = "700 12px ui-sans-serif, system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(label, x + width / 2, y + 27);
+  });
+  ctx.restore();
+}
+
 function drawSettingsScreen(center, radius) {
   const width = radius * 1.22;
   const height = radius * 1.08;
@@ -566,6 +603,16 @@ canvas.addEventListener("click", (event) => {
   const scale = canvas.width / rect.width;
   const x = (event.clientX - rect.left) * scale;
   const y = (event.clientY - rect.top) * scale;
+
+  const navZone = state.navHitZones.find((item) => pointInBounds(x, y, item));
+  if (navZone) {
+    state.mode = navZone.value;
+    state.popupOpen = false;
+    document.querySelectorAll(".nav-button").forEach((item) => {
+      item.classList.toggle("active", item.dataset.mode === state.mode);
+    });
+    return;
+  }
 
   if (state.mode === "settings") {
     const zone = state.settingsHitZones.find((item) => pointInBounds(x, y, item));
