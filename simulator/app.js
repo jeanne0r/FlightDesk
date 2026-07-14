@@ -601,11 +601,10 @@ function renderMapTiles() {
 }
 
 function zoomForRange(rangeKm, lat, widthPx) {
-  const radarRadiusPx = Math.max(160, widthPx * 0.405);
-  const targetMetersPerPixel = (rangeKm * 1000) / radarRadiusPx;
-  const latitudeScale = Math.max(0.2, Math.cos((lat * Math.PI) / 180));
-  const rawZoom = Math.log2((156543.03392 * latitudeScale) / targetMetersPerPixel);
-  return Math.max(7, Math.min(13, Math.round(rawZoom)));
+  if (rangeKm <= 20) return 10;
+  if (rangeKm <= 50) return 8;
+  if (rangeKm <= 100) return 7;
+  return 6;
 }
 
 async function geocodePostalCode(postalCode) {
