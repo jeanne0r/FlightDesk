@@ -860,13 +860,13 @@ function drawScreenPopup(center, radius) {
   const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
   if (!aircraft) return;
 
-  const width = radius * 1.12;
-  const height = radius * 0.54;
+  const width = radius * 1.18;
+  const height = radius * 0.70;
   const x = center - width / 2;
-  const y = center + radius * 0.05;
+  const y = center - radius * 0.10;
   state.popupBounds = { x, y, width, height };
-  state.popupCloseBounds = { x: x + width - 42, y: y + 12, width: 28, height: 28 };
-  state.popupFavoriteBounds = { x: x + width - 80, y: y + 12, width: 28, height: 28 };
+  state.popupCloseBounds = { x: x + width - 56, y: y + 12, width: 40, height: 40 };
+  state.popupFavoriteBounds = { x: x + width - 104, y: y + 12, width: 40, height: 40 };
 
   ctx.save();
   ctx.fillStyle = "rgba(4, 10, 6, 0.92)";
@@ -882,15 +882,15 @@ function drawScreenPopup(center, radius) {
   ctx.fillStyle = "rgba(141, 255, 111, 0.78)";
   ctx.font = "700 13px ui-sans-serif, system-ui";
   ctx.textAlign = "left";
-  ctx.fillText("AVION SÉLECTIONNÉ", x + 18, y + 28);
+  ctx.fillText("AVION SÉLECTIONNÉ", x + 18, y + 30);
 
   ctx.fillStyle = "#8dff6f";
   ctx.font = "700 30px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.callsign, x + 18, y + 66);
+  ctx.fillText(aircraft.callsign, x + 18, y + 72);
 
   ctx.fillStyle = "rgba(238, 244, 239, 0.74)";
   ctx.font = "15px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 18, y + 91);
+  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 18, y + 98);
 
   drawPopupButton(state.popupFavoriteBounds, state.favorites.has(aircraft.id) ? "★" : "☆");
   drawPopupButton(state.popupCloseBounds, "×");
@@ -901,12 +901,12 @@ function drawScreenPopup(center, radius) {
     ["VIT", `${Math.round(aircraft.speed)} km/h`],
     ["CAP", `${Math.round(aircraft.heading)}°`]
   ];
-  const cellWidth = (width - 36) / 2;
+  const cellWidth = (width - 40) / 2;
   metrics.forEach((metric, index) => {
     const col = index % 2;
     const row = Math.floor(index / 2);
-    const mx = x + 18 + col * cellWidth;
-    const my = y + 125 + row * 38;
+    const mx = x + 20 + col * cellWidth;
+    const my = y + 132 + row * 42;
     ctx.fillStyle = "rgba(238, 244, 239, 0.46)";
     ctx.font = "12px ui-sans-serif, system-ui";
     ctx.fillText(metric[0], mx, my);
