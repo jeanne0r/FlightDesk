@@ -44,6 +44,10 @@ const state = {
   trafficStatus: "Connexion trafic en attente…",
   liveAircraft: [],
   lastTrafficFetchMs: 0,
+  popupOpen: false,
+  popupBounds: null,
+  popupCloseBounds: null,
+  popupFavoriteBounds: null,
   mode: "radar",
   sweepDeg: 0,
   selectedId: null,
@@ -93,16 +97,7 @@ const elements = {
   favoriteToggle: document.getElementById("favorite-toggle"),
   assistantAnswer: document.getElementById("assistant-answer"),
   mapStatus: document.getElementById("map-status"),
-  trafficSummary: document.getElementById("traffic-summary"),
-  popup: document.getElementById("flight-popup"),
-  popupClose: document.getElementById("popup-close"),
-  popupCallsign: document.getElementById("popup-callsign"),
-  popupFavorite: document.getElementById("popup-favorite"),
-  popupAirline: document.getElementById("popup-airline"),
-  popupDistance: document.getElementById("popup-distance"),
-  popupAltitude: document.getElementById("popup-altitude"),
-  popupSpeed: document.getElementById("popup-speed"),
-  popupHeading: document.getElementById("popup-heading")
+  trafficSummary: document.getElementById("traffic-summary")
 };
 
 document.getElementById("postal-control").value = state.postalCode;
@@ -276,6 +271,7 @@ function drawRadar() {
   drawHome(center);
   drawAircraft();
   drawOverlayText(center);
+  drawScreenPopup(center, radius);
 }
 
 function drawSweep(center, radius, intensity) {
@@ -353,7 +349,7 @@ function drawAircraft() {
     ctx.fill();
     ctx.restore();
 
-    if (isSelected) {
+    if (isSelected && !state.popupOpen) {
       ctx.fillStyle = "rgba(8, 14, 10, 0.78)";
       ctx.strokeStyle = "rgba(82, 224, 121, 0.35)";
       const labelX = Math.min(point.x + 18, canvas.width - 148);
@@ -445,7 +441,7 @@ function updatePanel() {
   if (!selected) {
     elements.selectedEmpty.classList.remove("hidden");
     elements.selectedFlight.classList.add("hidden");
-    closeFlightPopup();
+    state.popupOpen = false;
     return;
   }
 
@@ -458,32 +454,11 @@ function updatePanel() {
   elements.selectedSpeed.textContent = Math.round(selected.speed);
   elements.selectedHeading.textContent = Math.round(selected.heading);
   elements.favoriteToggle.textContent = state.favorites.has(selected.id) ? "★" : "☆";
-  updateFlightPopup(selected);
 }
 
 function airlineFromCallsign(callsign) {
   const prefix = callsign.replace(/[0-9].*$/, "");
   return airlines[prefix] || "Compagnie inconnue";
-}
-
-function updateFlightPopup(aircraft) {
-  if (elements.popup.classList.contains("hidden") || !aircraft) return;
-  elements.popupCallsign.textContent = aircraft.callsign;
-  elements.popupAirline.textContent = aircraft.airline || airlineFromCallsign(aircraft.callsign);
-  elements.popupDistance.textContent = Math.round(aircraft.distance);
-  elements.popupAltitude.textContent = Math.round(aircraft.altitude);
-  elements.popupSpeed.textContent = Math.round(aircraft.speed);
-  elements.popupHeading.textContent = Math.round(aircraft.heading);
-  elements.popupFavorite.textContent = state.favorites.has(aircraft.id) ? "★" : "☆";
-}
-
-function openFlightPopup(aircraft) {
-  elements.popup.classList.remove("hidden");
-  updateFlightPopup(aircraft);
-}
-
-function closeFlightPopup() {
-  elements.popup.classList.add("hidden");
 }
 
 function animate(timestamp) {
@@ -501,6 +476,21 @@ canvas.addEventListener("click", (event) => {
   const scale = canvas.width / rect.width;
   const x = (event.clientX - rect.left) * scale;
   const y = (event.clientY - rect.top) * scale;
+
+  if (state.popupOpen) {
+    if (pointInBounds(x, y, state.popupCloseBounds)) {
+      state.popupOpen = false;
+      return;
+    }
+    if (pointInBounds(x, y, state.popupFavoriteBounds)) {
+      toggleSelectedFavorite();
+      return;
+    }
+    if (!pointInBounds(x, y, state.popupBounds)) {
+      state.popupOpen = false;
+    }
+  }
+
   let nearest = null;
   let nearestDistance = 34;
 
@@ -515,7 +505,7 @@ canvas.addEventListener("click", (event) => {
 
   if (nearest) {
     state.selectedId = nearest.id;
-    openFlightPopup(nearest);
+    state.popupOpen = true;
   }
 });
 
@@ -567,20 +557,6 @@ elements.favoriteToggle.addEventListener("click", () => {
   }
   saveFavorites();
 });
-
-elements.popupFavorite.addEventListener("click", () => {
-  if (!state.selectedId) return;
-  if (state.favorites.has(state.selectedId)) {
-    state.favorites.delete(state.selectedId);
-  } else {
-    state.favorites.add(state.selectedId);
-  }
-  saveFavorites();
-  const selected = state.aircraft.find((aircraft) => aircraft.id === state.selectedId);
-  updateFlightPopup(selected);
-});
-
-elements.popupClose.addEventListener("click", closeFlightPopup);
 
 document.getElementById("ask-button").addEventListener("click", () => {
   const visible = state.aircraft.filter((aircraft) => aircraft.visible);
@@ -719,3 +695,98 @@ window.addEventListener("error", (event) => {
 window.addEventListener("unhandledrejection", (event) => {
   state.trafficStatus = `Erreur preview: ${event.reason?.message || event.reason}`;
 });
+
+function drawScreenPopup(center, radius) {
+  if (!state.popupOpen || !state.selectedId) return;
+  const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
+  if (!aircraft) return;
+
+  const width = radius * 1.12;
+  const height = radius * 0.54;
+  const x = center - width / 2;
+  const y = center + radius * 0.05;
+  state.popupBounds = { x, y, width, height };
+  state.popupCloseBounds = { x: x + width - 42, y: y + 12, width: 28, height: 28 };
+  state.popupFavoriteBounds = { x: x + width - 80, y: y + 12, width: 28, height: 28 };
+
+  ctx.save();
+  ctx.fillStyle = "rgba(4, 10, 6, 0.92)";
+  ctx.strokeStyle = "rgba(82, 224, 121, 0.44)";
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(82, 224, 121, 0.25)";
+  ctx.shadowBlur = 24;
+  roundRect(x, y, width, height, 16);
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = "rgba(141, 255, 111, 0.78)";
+  ctx.font = "700 13px ui-sans-serif, system-ui";
+  ctx.textAlign = "left";
+  ctx.fillText("AVION SÉLECTIONNÉ", x + 18, y + 28);
+
+  ctx.fillStyle = "#8dff6f";
+  ctx.font = "700 30px ui-sans-serif, system-ui";
+  ctx.fillText(aircraft.callsign, x + 18, y + 66);
+
+  ctx.fillStyle = "rgba(238, 244, 239, 0.74)";
+  ctx.font = "15px ui-sans-serif, system-ui";
+  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 18, y + 91);
+
+  drawPopupButton(state.popupFavoriteBounds, state.favorites.has(aircraft.id) ? "★" : "☆");
+  drawPopupButton(state.popupCloseBounds, "×");
+
+  const metrics = [
+    ["DIST", `${Math.round(aircraft.distance)} km`],
+    ["ALT", `${Math.round(aircraft.altitude)} m`],
+    ["VIT", `${Math.round(aircraft.speed)} km/h`],
+    ["CAP", `${Math.round(aircraft.heading)}°`]
+  ];
+  const cellWidth = (width - 36) / 2;
+  metrics.forEach((metric, index) => {
+    const col = index % 2;
+    const row = Math.floor(index / 2);
+    const mx = x + 18 + col * cellWidth;
+    const my = y + 125 + row * 38;
+    ctx.fillStyle = "rgba(238, 244, 239, 0.46)";
+    ctx.font = "12px ui-sans-serif, system-ui";
+    ctx.fillText(metric[0], mx, my);
+    ctx.fillStyle = "#eef4ef";
+    ctx.font = "700 17px ui-sans-serif, system-ui";
+    ctx.fillText(metric[1], mx, my + 21);
+  });
+
+  ctx.restore();
+}
+
+function drawPopupButton(bounds, label) {
+  ctx.fillStyle = "rgba(82, 224, 121, 0.10)";
+  ctx.strokeStyle = "rgba(82, 224, 121, 0.38)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, bounds.width / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#8dff6f";
+  ctx.font = "700 19px ui-sans-serif, system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText(label, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 + 6);
+}
+
+function pointInBounds(x, y, bounds) {
+  return Boolean(bounds) &&
+    x >= bounds.x &&
+    x <= bounds.x + bounds.width &&
+    y >= bounds.y &&
+    y <= bounds.y + bounds.height;
+}
+
+function toggleSelectedFavorite() {
+  if (!state.selectedId) return;
+  if (state.favorites.has(state.selectedId)) {
+    state.favorites.delete(state.selectedId);
+  } else {
+    state.favorites.add(state.selectedId);
+  }
+  saveFavorites();
+}

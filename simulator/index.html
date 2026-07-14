@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FlightDesk Simulator</title>
-    <link rel="stylesheet" href="./styles.css?v=20260714-live11">
+    <link rel="stylesheet" href="./styles.css?v=20260714-live12">
   </head>
   <body>
     <main class="shell">
@@ -29,7 +29,7 @@
           <p class="eyebrow">FlightDesk live preview</p>
           <h1>Radar aérien personnel</h1>
           <p id="traffic-summary">Données trafic simulées, prêtes à remplacer par un fournisseur Internet.</p>
-          <small class="build-label">Build live11 · popup avion</small>
+          <small class="build-label">Build live12 · popup dans l'écran rond</small>
         </header>
 
         <section class="status-grid" aria-label="État radar">
@@ -113,22 +113,6 @@
       </aside>
     </main>
 
-    <aside id="flight-popup" class="flight-popup hidden" aria-label="Détail avion" role="dialog">
-      <button id="popup-close" class="popup-close" type="button" aria-label="Fermer">×</button>
-      <p class="eyebrow">Avion sélectionné</p>
-      <div class="popup-title">
-        <strong id="popup-callsign">LX281</strong>
-        <button id="popup-favorite" class="icon-button" type="button" aria-label="Ajouter aux favoris">☆</button>
-      </div>
-      <p id="popup-airline" class="popup-subtitle">OpenSky</p>
-      <dl class="popup-grid">
-        <div><dt>Distance</dt><dd><span id="popup-distance">-</span> km</dd></div>
-        <div><dt>Altitude</dt><dd><span id="popup-altitude">-</span> m</dd></div>
-        <div><dt>Vitesse</dt><dd><span id="popup-speed">-</span> km/h</dd></div>
-        <div><dt>Cap</dt><dd><span id="popup-heading">-</span>°</dd></div>
-      </dl>
-    </aside>
-
-    <script src="./app.js?v=20260714-live11"></script>
+    <script src="./app.js?v=20260714-live12"></script>
   </body>
 </html>
