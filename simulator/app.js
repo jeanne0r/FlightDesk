@@ -890,7 +890,7 @@ function ensureAircraftImage(id, src) {
 
 function routeLabel(details) {
   if (details?.origin?.code && details?.destination?.code) {
-    return `${details.origin.code} → ${details.destination.code}`;
+    return `${details.origin.city || details.origin.code} → ${details.destination.city || details.destination.code}`;
   }
   if (details?.status === "loading") {
     return "ROUTE EN RECHERCHE";
