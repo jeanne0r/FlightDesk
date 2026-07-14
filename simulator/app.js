@@ -434,14 +434,14 @@ function modeSubtitle(mode) {
 function drawScreenNav(center, radius) {
   const modes = [
     ["radar", "RADAR"],
-    ["search", "RECHERCHE"],
-    ["favorites", "FAVORIS"],
-    ["settings", "RÉGLAGES"],
-    ["assistant", "ASSISTANT"]
+    ["search", "RECH"],
+    ["favorites", "FAV"],
+    ["settings", "RÉGL"],
+    ["assistant", "IA"]
   ];
-  const gap = 8;
-  const width = radius * 0.34;
-  const height = 44;
+  const gap = 7;
+  const width = radius * 0.27;
+  const height = 40;
   const totalWidth = modes.length * width + (modes.length - 1) * gap;
   const startX = center - totalWidth / 2;
   const y = center + radius * 0.62;
@@ -451,7 +451,7 @@ function drawScreenNav(center, radius) {
   modes.forEach(([mode, label], index) => {
     const x = startX + index * (width + gap);
     const active = state.mode === mode;
-    state.navHitZones.push({ type: "nav", value: mode, x, y, width, height });
+    state.navHitZones.push({ type: "nav", value: mode, x: x - 5, y: y - 7, width: width + 10, height: height + 14 });
     ctx.fillStyle = active ? "rgba(82, 224, 121, 0.15)" : "rgba(2, 7, 3, 0.72)";
     ctx.strokeStyle = active ? "rgba(141, 255, 111, 0.86)" : "rgba(82, 224, 121, 0.20)";
     ctx.lineWidth = active ? 2 : 1.2;
@@ -459,9 +459,9 @@ function drawScreenNav(center, radius) {
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = active ? "#8dff6f" : "rgba(238, 244, 239, 0.72)";
-    ctx.font = "700 12px ui-sans-serif, system-ui";
+    ctx.font = "700 11px ui-sans-serif, system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(label, x + width / 2, y + 27);
+    ctx.fillText(label, x + width / 2, y + 25);
   });
   ctx.restore();
 }
@@ -860,7 +860,7 @@ function drawScreenPopup(center, radius) {
   const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
   if (!aircraft) return;
 
-  const width = radius * 1.18;
+  const width = radius * 1.00;
   const height = radius * 0.70;
   const x = center - width / 2;
   const y = center - radius * 0.10;
