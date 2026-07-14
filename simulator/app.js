@@ -893,9 +893,9 @@ function drawScreenPopup(center, radius) {
   if (!aircraft) return;
 
   const width = radius * 0.96;
-  const height = radius * 0.58;
+  const height = radius * 0.74;
   const x = center - width / 2;
-  const y = center - radius * 0.10;
+  const y = center - radius * 0.18;
   state.popupBounds = { x, y, width, height };
   state.popupFavoriteBounds = { x: x + width - 92, y: y + 12, width: 42, height: 42 };
   state.popupCloseBounds = { x: x + width - 48, y: y + 12, width: 42, height: 42 };
