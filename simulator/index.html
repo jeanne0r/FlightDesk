@@ -10,6 +10,7 @@
     <main class="shell">
       <section class="radar-stage" aria-label="Simulateur radar FlightDesk">
         <div class="device">
+          <div id="map-layer" class="map-layer" aria-hidden="true"></div>
           <canvas id="radar" width="720" height="720" aria-label="Radar FlightDesk simulé"></canvas>
           <div class="screen-glass"></div>
           <div class="device-nav" aria-label="Navigation écran">
@@ -71,6 +72,7 @@
           <label>
             Code postal
             <input id="postal-control" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="10" value="1000">
+            <small id="map-status">Carte réelle centrée sur 1000 Lausanne.</small>
           </label>
           <label>
             Rayon radar

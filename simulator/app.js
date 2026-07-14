@@ -1,5 +1,30 @@
 const canvas = document.getElementById("radar");
 const ctx = canvas.getContext("2d");
+const mapLayer = document.getElementById("map-layer");
+
+const swissPostalCenters = {
+  "1000": { label: "Lausanne", lat: 46.5197, lon: 6.6323 },
+  "1010": { label: "Lausanne", lat: 46.5347, lon: 6.6613 },
+  "1020": { label: "Renens", lat: 46.5333, lon: 6.5916 },
+  "1110": { label: "Morges", lat: 46.5113, lon: 6.4985 },
+  "1200": { label: "Genève", lat: 46.2044, lon: 6.1432 },
+  "1260": { label: "Nyon", lat: 46.3833, lon: 6.2396 },
+  "1400": { label: "Yverdon-les-Bains", lat: 46.7785, lon: 6.6412 },
+  "1700": { label: "Fribourg", lat: 46.8065, lon: 7.1619 },
+  "1800": { label: "Vevey", lat: 46.4628, lon: 6.8419 },
+  "1820": { label: "Montreux", lat: 46.4312, lon: 6.9107 },
+  "1950": { label: "Sion", lat: 46.2331, lon: 7.3606 },
+  "2000": { label: "Neuchâtel", lat: 46.9918, lon: 6.9310 },
+  "2500": { label: "Bienne", lat: 47.1368, lon: 7.2468 },
+  "3000": { label: "Berne", lat: 46.9480, lon: 7.4474 },
+  "4000": { label: "Bâle", lat: 47.5596, lon: 7.5886 },
+  "5000": { label: "Aarau", lat: 47.3925, lon: 8.0442 },
+  "6000": { label: "Lucerne", lat: 47.0502, lon: 8.3093 },
+  "6900": { label: "Lugano", lat: 46.0037, lon: 8.9511 },
+  "7000": { label: "Coire", lat: 46.8508, lon: 9.5320 },
+  "8000": { label: "Zurich", lat: 47.3769, lon: 8.5417 },
+  "9000": { label: "Saint-Gall", lat: 47.4245, lon: 9.3767 }
+};
 
 const state = {
   rangeKm: 50,
@@ -8,12 +33,13 @@ const state = {
   night: true,
   muted: false,
   postalCode: localStorage.getItem("flightdesk:postalCode") || "1000",
+  mapCenter: null,
+  mapZoom: 11,
   mode: "radar",
   sweepDeg: 0,
   selectedId: null,
   favorites: new Set(JSON.parse(localStorage.getItem("flightdesk:favorites") || "[]")),
-  aircraft: [],
-  mapPaths: []
+  aircraft: []
 };
 
 const airlines = {
@@ -52,11 +78,12 @@ const elements = {
   selectedSpeed: document.getElementById("selected-speed"),
   selectedHeading: document.getElementById("selected-heading"),
   favoriteToggle: document.getElementById("favorite-toggle"),
-  assistantAnswer: document.getElementById("assistant-answer")
+  assistantAnswer: document.getElementById("assistant-answer"),
+  mapStatus: document.getElementById("map-status")
 };
 
 document.getElementById("postal-control").value = state.postalCode;
-state.mapPaths = buildMapPaths(state.postalCode);
+setPostalCode(state.postalCode);
 
 function saveFavorites() {
   localStorage.setItem("flightdesk:favorites", JSON.stringify([...state.favorites]));
@@ -101,19 +128,17 @@ function drawRadar() {
   const glow = state.night ? 1 : 0.72;
 
   ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "#020503";
+  ctx.fillStyle = "rgba(2, 5, 3, 0.58)";
   ctx.fillRect(0, 0, size, size);
 
   const bg = ctx.createRadialGradient(center, center, 0, center, center, radius * 1.15);
-  bg.addColorStop(0, `rgba(24, 112, 43, ${0.12 * intensity})`);
-  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.92)");
-  bg.addColorStop(1, "#020503");
+  bg.addColorStop(0, `rgba(24, 112, 43, ${0.08 * intensity})`);
+  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.58)");
+  bg.addColorStop(1, "rgba(2, 5, 3, 0.82)");
   ctx.fillStyle = bg;
   ctx.beginPath();
   ctx.arc(center, center, radius * 1.05, 0, Math.PI * 2);
   ctx.fill();
-
-  drawMapWatermark(center, radius, intensity);
 
   ctx.save();
   ctx.translate(center, center);
@@ -138,93 +163,6 @@ function drawRadar() {
   drawHome(center);
   drawAircraft();
   drawOverlayText(center);
-}
-
-function postalSeed(postalCode) {
-  return String(postalCode || "1000").split("").reduce((seed, char) => {
-    return (seed * 31 + char.charCodeAt(0)) >>> 0;
-  }, 17);
-}
-
-function seededRandom(seed) {
-  let value = seed >>> 0;
-  return () => {
-    value = (value * 1664525 + 1013904223) >>> 0;
-    return value / 4294967296;
-  };
-}
-
-function buildMapPaths(postalCode) {
-  const random = seededRandom(postalSeed(postalCode));
-  const paths = [];
-  const roadCount = 9;
-
-  for (let i = 0; i < roadCount; i += 1) {
-    const vertical = random() > 0.45;
-    const base = -0.86 + random() * 1.72;
-    const drift = -0.18 + random() * 0.36;
-    const points = [];
-    for (let step = 0; step < 6; step += 1) {
-      const t = -0.98 + step * 0.392;
-      const bend = Math.sin((step + random() * 2) * 1.35 + i) * 0.07;
-      points.push(vertical
-        ? { x: base + bend + drift * step * 0.18, y: t }
-        : { x: t, y: base + bend + drift * step * 0.18 });
-    }
-    paths.push({ kind: i % 4 === 0 ? "major" : "minor", points });
-  }
-
-  const river = [];
-  for (let step = 0; step < 8; step += 1) {
-    const t = -1 + step * 0.285;
-    river.push({
-      x: t,
-      y: Math.sin(t * 3.1 + random() * 2.2) * 0.18 + 0.12
-    });
-  }
-  paths.push({ kind: "river", points: river });
-
-  return paths;
-}
-
-function drawMapWatermark(center, radius, intensity) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(center, center, radius * 1.02, 0, Math.PI * 2);
-  ctx.clip();
-  ctx.globalCompositeOperation = "screen";
-
-  state.mapPaths.forEach((path) => {
-    const alpha = path.kind === "major" ? 0.17 : path.kind === "river" ? 0.13 : 0.09;
-    ctx.strokeStyle = path.kind === "river"
-      ? `rgba(82, 224, 121, ${alpha * intensity})`
-      : `rgba(141, 255, 111, ${alpha * intensity})`;
-    ctx.lineWidth = path.kind === "major" ? 3 : path.kind === "river" ? 5 : 1.5;
-    ctx.beginPath();
-    path.points.forEach((point, index) => {
-      const x = center + point.x * radius * 0.92;
-      const y = center + point.y * radius * 0.92;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  });
-
-  ctx.strokeStyle = `rgba(82, 224, 121, ${0.08 * intensity})`;
-  ctx.lineWidth = 1;
-  for (let i = -2; i <= 2; i += 1) {
-    const offset = i * radius * 0.22;
-    ctx.beginPath();
-    ctx.moveTo(center - radius, center + offset);
-    ctx.lineTo(center + radius, center + offset + radius * 0.08);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(center + offset, center - radius);
-    ctx.lineTo(center + offset - radius * 0.08, center + radius);
-    ctx.stroke();
-  }
-
-  ctx.restore();
 }
 
 function drawSweep(center, radius, intensity) {
@@ -323,11 +261,14 @@ function drawOverlayText(center) {
   ctx.fillStyle = "rgba(238, 244, 239, 0.92)";
   ctx.font = "18px ui-sans-serif, system-ui";
   ctx.fillText("18:47", center, 120);
+  ctx.fillStyle = "rgba(141, 255, 111, 0.62)";
+  ctx.font = "700 13px ui-sans-serif, system-ui";
+  ctx.fillText("TRAFIC SIMULÉ", center, 142);
   ctx.fillStyle = "#52e079";
   ctx.font = "700 44px ui-sans-serif, system-ui";
-  ctx.fillText(String(visible.length), center, 170);
+  ctx.fillText(String(visible.length), center, 184);
   ctx.font = "700 18px ui-sans-serif, system-ui";
-  ctx.fillText("AVIONS", center, 196);
+  ctx.fillText("AVIONS", center, 210);
 
   if (state.mode !== "radar") {
     ctx.fillStyle = "rgba(3, 9, 5, 0.72)";
@@ -435,10 +376,14 @@ document.getElementById("range-control").addEventListener("change", (event) => {
   state.rangeKm = Number(event.target.value);
 });
 
+let postalInputTimer = null;
 document.getElementById("postal-control").addEventListener("input", (event) => {
-  state.postalCode = event.target.value.trim() || "1000";
-  state.mapPaths = buildMapPaths(state.postalCode);
-  localStorage.setItem("flightdesk:postalCode", state.postalCode);
+  const nextCode = event.target.value.trim() || "1000";
+  state.postalCode = nextCode;
+  elements.postalLabel.textContent = nextCode;
+  elements.mapStatus.textContent = `Carte en attente pour ${nextCode}…`;
+  window.clearTimeout(postalInputTimer);
+  postalInputTimer = window.setTimeout(() => setPostalCode(nextCode), 550);
 });
 
 document.getElementById("brightness-control").addEventListener("input", (event) => {
@@ -494,3 +439,98 @@ document.getElementById("ask-button").addEventListener("click", () => {
 });
 
 requestAnimationFrame(animate);
+
+function lonLatToPixel(lat, lon, zoom) {
+  const sinLat = Math.sin((lat * Math.PI) / 180);
+  const scale = 256 * 2 ** zoom;
+  return {
+    x: ((lon + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale
+  };
+}
+
+function renderMapTiles() {
+  if (!state.mapCenter) return;
+
+  const width = mapLayer.clientWidth || 560;
+  const height = mapLayer.clientHeight || width;
+  const zoom = state.mapZoom;
+  const centerPx = lonLatToPixel(state.mapCenter.lat, state.mapCenter.lon, zoom);
+  const topLeft = {
+    x: centerPx.x - width / 2,
+    y: centerPx.y - height / 2
+  };
+  const minTileX = Math.floor(topLeft.x / 256);
+  const minTileY = Math.floor(topLeft.y / 256);
+  const maxTileX = Math.floor((topLeft.x + width) / 256);
+  const maxTileY = Math.floor((topLeft.y + height) / 256);
+  const tileCount = 2 ** zoom;
+  const fragment = document.createDocumentFragment();
+
+  mapLayer.replaceChildren();
+
+  for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+    if (tileY < 0 || tileY >= tileCount) continue;
+    for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+      const wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
+      const img = document.createElement("img");
+      img.alt = "";
+      img.decoding = "async";
+      img.loading = "lazy";
+      img.src = `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${tileY}.png`;
+      img.style.left = `${Math.round(tileX * 256 - topLeft.x)}px`;
+      img.style.top = `${Math.round(tileY * 256 - topLeft.y)}px`;
+      fragment.appendChild(img);
+    }
+  }
+
+  mapLayer.appendChild(fragment);
+}
+
+async function geocodePostalCode(postalCode) {
+  const known = swissPostalCenters[postalCode];
+  if (known) return known;
+
+  const url = new URL("https://nominatim.openstreetmap.org/search");
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("countrycodes", "ch");
+  url.searchParams.set("postalcode", postalCode);
+  url.searchParams.set("limit", "1");
+
+  const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error("Geocoding failed");
+  const results = await response.json();
+  if (!results.length) return null;
+
+  return {
+    label: results[0].display_name.split(",").slice(0, 2).join(","),
+    lat: Number(results[0].lat),
+    lon: Number(results[0].lon)
+  };
+}
+
+let postalLookupId = 0;
+async function setPostalCode(postalCode) {
+  const cleanCode = postalCode.replace(/[^\dA-Za-z -]/g, "").slice(0, 10) || "1000";
+  const lookupId = ++postalLookupId;
+  state.postalCode = cleanCode;
+  localStorage.setItem("flightdesk:postalCode", cleanCode);
+  elements.postalLabel.textContent = cleanCode;
+  elements.mapStatus.textContent = `Recherche de la carte pour ${cleanCode}…`;
+
+  try {
+    const center = await geocodePostalCode(cleanCode);
+    if (lookupId !== postalLookupId) return;
+    if (!center) throw new Error("Postal code not found");
+    state.mapCenter = center;
+    elements.mapStatus.textContent = `Carte réelle centrée sur ${cleanCode} ${center.label}.`;
+  } catch (error) {
+    if (lookupId !== postalLookupId) return;
+    state.mapCenter = swissPostalCenters["1000"];
+    elements.mapStatus.textContent = `Code postal non trouvé, carte centrée sur 1000 Lausanne.`;
+  }
+
+  renderMapTiles();
+}
+
+window.addEventListener("resize", renderMapTiles);

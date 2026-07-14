@@ -56,9 +56,13 @@ python3 -m http.server 4173
 
 Puis ouvrir `http://127.0.0.1:4173`.
 
-Le simulateur couvre déjà le radar animé, la carte en filigrane vert, les avions
-simulés, la sélection d'un vol, les favoris, le code postal, les réglages
-principaux et une réponse Gemini simulée.
+Le simulateur couvre déjà le radar animé, une vraie carte OpenStreetMap en
+filigrane vert, les avions simulés, la sélection d'un vol, les favoris, le code
+postal, les réglages principaux et une réponse Gemini simulée.
+
+Le trafic aérien n'est pas encore connecté : les avions affichés sont des vols
+de démonstration animés. La connexion au fournisseur Internet sera ajoutée dans
+le module trafic.
 
 ## Structure
 
