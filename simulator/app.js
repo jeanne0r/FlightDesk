@@ -35,6 +35,10 @@ const state = {
   postalCode: localStorage.getItem("flightdesk:postalCode") || "1000",
   mapCenter: null,
   mapZoom: 11,
+  trafficSource: "simulated",
+  trafficStatus: "Connexion trafic en attente…",
+  liveAircraft: [],
+  lastTrafficFetchMs: 0,
   mode: "radar",
   sweepDeg: 0,
   selectedId: null,
@@ -64,6 +68,8 @@ const demoFlights = [
   { id: "89644a", callsign: "UAE21", airline: "Emirates", distance: 176, bearing: 270, altitude: 12100, speed: 882, heading: 68 }
 ];
 
+const trafficPollMs = 18000;
+
 const elements = {
   count: document.getElementById("aircraft-count"),
   rangeLabel: document.getElementById("range-label"),
@@ -90,6 +96,18 @@ function saveFavorites() {
 }
 
 function updateAircraft(timeSeconds) {
+  if (state.trafficSource === "live" && state.liveAircraft.length) {
+    state.aircraft = state.liveAircraft.map((aircraft) => ({
+      ...aircraft,
+      visible: aircraft.distance <= state.rangeKm,
+      favorite: state.favorites.has(aircraft.id)
+    }));
+    if (state.selectedId && !state.aircraft.some((aircraft) => aircraft.id === state.selectedId && aircraft.visible)) {
+      state.selectedId = null;
+    }
+    return;
+  }
+
   state.aircraft = demoFlights.map((flight, index) => {
     const wobble = Math.sin(timeSeconds * (0.16 + index * 0.025) + index) * 4;
     const bearing = (flight.bearing + timeSeconds * (1.8 + index * 0.22) + wobble + 360) % 360;
@@ -105,6 +123,84 @@ function updateAircraft(timeSeconds) {
 
   if (state.selectedId && !state.aircraft.some((aircraft) => aircraft.id === state.selectedId && aircraft.visible)) {
     state.selectedId = null;
+  }
+}
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const earthKm = 6371;
+  const p1 = (lat1 * Math.PI) / 180;
+  const p2 = (lat2 * Math.PI) / 180;
+  const dp = ((lat2 - lat1) * Math.PI) / 180;
+  const dl = ((lon2 - lon1) * Math.PI) / 180;
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return earthKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function initialBearingDeg(lat1, lon1, lat2, lon2) {
+  const p1 = (lat1 * Math.PI) / 180;
+  const p2 = (lat2 * Math.PI) / 180;
+  const dl = ((lon2 - lon1) * Math.PI) / 180;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+function normalizeOpenSkyState(row) {
+  if (!state.mapCenter || !Array.isArray(row)) return null;
+  const lon = row[5];
+  const lat = row[6];
+  if (typeof lat !== "number" || typeof lon !== "number") return null;
+
+  const distance = haversineKm(state.mapCenter.lat, state.mapCenter.lon, lat, lon);
+  const bearing = initialBearingDeg(state.mapCenter.lat, state.mapCenter.lon, lat, lon);
+  const callsign = String(row[1] || row[0] || "UNKNOWN").trim() || String(row[0]).toUpperCase();
+  const velocityMs = typeof row[9] === "number" ? row[9] : 0;
+  const altitude = typeof row[13] === "number" ? row[13] : (typeof row[7] === "number" ? row[7] : 0);
+  const heading = typeof row[10] === "number" ? row[10] : bearing;
+
+  return {
+    id: String(row[0] || callsign),
+    callsign,
+    airline: row[2] || "OpenSky",
+    latitude: lat,
+    longitude: lon,
+    distance,
+    bearing,
+    altitude,
+    speed: velocityMs * 3.6,
+    heading,
+    onGround: Boolean(row[8])
+  };
+}
+
+async function fetchLiveTraffic(force = false) {
+  if (!state.mapCenter) return;
+  const now = Date.now();
+  if (!force && now - state.lastTrafficFetchMs < trafficPollMs) return;
+  state.lastTrafficFetchMs = now;
+
+  const params = new URLSearchParams({
+    lat: String(state.mapCenter.lat),
+    lon: String(state.mapCenter.lon),
+    range: String(state.rangeKm)
+  });
+
+  try {
+    state.trafficStatus = "Connexion OpenSky…";
+    const response = await fetch(`/api/traffic?${params.toString()}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    const aircraft = (payload.states || []).map(normalizeOpenSkyState).filter(Boolean);
+    state.liveAircraft = aircraft
+      .filter((item) => item.distance <= state.rangeKm && !item.onGround)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 48);
+    state.trafficSource = "live";
+    state.trafficStatus = `${state.liveAircraft.length} avion(s) live OpenSky`;
+  } catch (error) {
+    state.trafficSource = "simulated";
+    state.liveAircraft = [];
+    state.trafficStatus = "OpenSky indisponible, trafic simulé";
   }
 }
 
@@ -128,13 +224,13 @@ function drawRadar() {
   const glow = state.night ? 1 : 0.72;
 
   ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "rgba(2, 5, 3, 0.58)";
+  ctx.fillStyle = "rgba(2, 5, 3, 0.28)";
   ctx.fillRect(0, 0, size, size);
 
   const bg = ctx.createRadialGradient(center, center, 0, center, center, radius * 1.15);
-  bg.addColorStop(0, `rgba(24, 112, 43, ${0.08 * intensity})`);
-  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.58)");
-  bg.addColorStop(1, "rgba(2, 5, 3, 0.82)");
+  bg.addColorStop(0, `rgba(24, 112, 43, ${0.05 * intensity})`);
+  bg.addColorStop(0.7, "rgba(3, 16, 8, 0.34)");
+  bg.addColorStop(1, "rgba(2, 5, 3, 0.62)");
   ctx.fillStyle = bg;
   ctx.beginPath();
   ctx.arc(center, center, radius * 1.05, 0, Math.PI * 2);
@@ -263,7 +359,7 @@ function drawOverlayText(center) {
   ctx.fillText("18:47", center, 120);
   ctx.fillStyle = "rgba(141, 255, 111, 0.62)";
   ctx.font = "700 13px ui-sans-serif, system-ui";
-  ctx.fillText("TRAFIC SIMULÉ", center, 142);
+  ctx.fillText(state.trafficSource === "live" ? "LIVE OPENSKY" : "TRAFIC SIMULÉ", center, 142);
   ctx.fillStyle = "#52e079";
   ctx.font = "700 44px ui-sans-serif, system-ui";
   ctx.fillText(String(visible.length), center, 184);
@@ -320,6 +416,10 @@ function updatePanel() {
   elements.rangeLabel.textContent = state.rangeKm;
   elements.modeLabel.textContent = modeTitle(state.mode);
   elements.postalLabel.textContent = state.postalCode || "—";
+  document.querySelector(".panel-header p:last-child").textContent =
+    state.trafficSource === "live"
+      ? `Données trafic live via OpenSky. ${state.trafficStatus}.`
+      : `Données trafic simulées. ${state.trafficStatus}.`;
 
   if (!selected) {
     elements.selectedEmpty.classList.remove("hidden");
@@ -346,6 +446,7 @@ function airlineFromCallsign(callsign) {
 function animate(timestamp) {
   const seconds = timestamp / 1000;
   state.sweepDeg = (state.sweepDeg + 1.7) % 360;
+  fetchLiveTraffic(false);
   updateAircraft(seconds);
   drawRadar();
   updatePanel();
@@ -374,6 +475,7 @@ canvas.addEventListener("click", (event) => {
 
 document.getElementById("range-control").addEventListener("change", (event) => {
   state.rangeKm = Number(event.target.value);
+  fetchLiveTraffic(true);
 });
 
 let postalInputTimer = null;
@@ -531,6 +633,7 @@ async function setPostalCode(postalCode) {
   }
 
   renderMapTiles();
+  fetchLiveTraffic(true);
 }
 
 window.addEventListener("resize", renderMapTiles);

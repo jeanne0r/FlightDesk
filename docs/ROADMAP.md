@@ -25,7 +25,8 @@
 - [ ] portail Wi-Fi
 - [ ] position de la maison
 - [ ] fournisseur de données trafic configurable
-- [ ] avions réels via fournisseur Internet
+- [x] avions réels via OpenSky dans le simulateur
+- [ ] fournisseur trafic configurable dans le firmware
 - [ ] cache et limitation des appels
 - [ ] gestion des erreurs réseau
 

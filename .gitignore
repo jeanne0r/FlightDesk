@@ -3,3 +3,4 @@
 .DS_Store
 firmware/include/secrets.h
 *.zip
+__pycache__/
