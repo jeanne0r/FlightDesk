@@ -615,10 +615,7 @@ function animate(timestamp) {
 }
 
 canvas.addEventListener("click", (event) => {
-  const rect = canvas.getBoundingClientRect();
-  const scale = canvas.width / rect.width;
-  const x = (event.clientX - rect.left) * scale;
-  const y = (event.clientY - rect.top) * scale;
+  const { x, y } = canvasPoint(event);
 
   if (state.popupOpen) {
     if (pointInBounds(x, y, state.popupCloseBounds)) {
@@ -688,6 +685,20 @@ canvas.addEventListener("click", (event) => {
     state.popupOpen = true;
   }
 });
+
+function canvasPoint(event) {
+  if (typeof event.offsetX === "number" && typeof event.offsetY === "number") {
+    return {
+      x: event.offsetX * (canvas.width / canvas.clientWidth),
+      y: event.offsetY * (canvas.height / canvas.clientHeight)
+    };
+  }
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / rect.width),
+    y: (event.clientY - rect.top) * (canvas.height / rect.height)
+  };
+}
 
 document.getElementById("range-control").addEventListener("change", (event) => {
   state.rangeKm = Number(event.target.value);
@@ -881,13 +892,13 @@ function drawScreenPopup(center, radius) {
   const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
   if (!aircraft) return;
 
-  const width = radius * 1.02;
-  const height = radius * 0.64;
+  const width = radius * 0.96;
+  const height = radius * 0.58;
   const x = center - width / 2;
-  const y = center - radius * 0.12;
+  const y = center - radius * 0.10;
   state.popupBounds = { x, y, width, height };
-  state.popupFavoriteBounds = { x: x + 18, y: y + height - 48, width: (width - 48) / 2, height: 36 };
-  state.popupCloseBounds = { x: x + 30 + (width - 48) / 2, y: y + height - 48, width: (width - 48) / 2, height: 36 };
+  state.popupFavoriteBounds = { x: x + width - 92, y: y + 12, width: 42, height: 42 };
+  state.popupCloseBounds = { x: x + width - 48, y: y + 12, width: 42, height: 42 };
 
   ctx.save();
   ctx.fillStyle = "rgba(4, 10, 6, 0.92)";
@@ -903,15 +914,15 @@ function drawScreenPopup(center, radius) {
   ctx.fillStyle = "rgba(141, 255, 111, 0.78)";
   ctx.font = "700 13px ui-sans-serif, system-ui";
   ctx.textAlign = "left";
-  ctx.fillText("AVION SÉLECTIONNÉ", x + 16, y + 28);
+  ctx.fillText("AVION SÉLECTIONNÉ", x + 16, y + 29);
 
   ctx.fillStyle = "#8dff6f";
   ctx.font = "700 28px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.callsign, x + 16, y + 68);
+  ctx.fillText(aircraft.callsign, x + 16, y + 70);
 
   ctx.fillStyle = "rgba(238, 244, 239, 0.74)";
   ctx.font = "15px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 16, y + 92);
+  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 16, y + 94);
 
   const metrics = [
     ["DIST", `${Math.round(aircraft.distance)} km`],
@@ -924,7 +935,7 @@ function drawScreenPopup(center, radius) {
     const col = index % 2;
     const row = Math.floor(index / 2);
     const mx = x + 16 + col * cellWidth;
-    const my = y + 120 + row * 34;
+    const my = y + 122 + row * 38;
     ctx.fillStyle = "rgba(238, 244, 239, 0.46)";
     ctx.font = "12px ui-sans-serif, system-ui";
     ctx.fillText(metric[0], mx, my);
@@ -933,23 +944,24 @@ function drawScreenPopup(center, radius) {
     ctx.fillText(metric[1], mx, my + 20);
   });
 
-  drawPopupActionButton(state.popupFavoriteBounds, state.favorites.has(aircraft.id) ? "★ Favori" : "☆ Favori");
-  drawPopupActionButton(state.popupCloseBounds, "Fermer");
+  drawPopupIconButton(state.popupFavoriteBounds, state.favorites.has(aircraft.id) ? "★" : "☆");
+  drawPopupIconButton(state.popupCloseBounds, "×");
 
   ctx.restore();
 }
 
-function drawPopupActionButton(bounds, label) {
-  ctx.fillStyle = label === "Fermer" ? "rgba(255, 255, 255, 0.08)" : "rgba(82, 224, 121, 0.16)";
-  ctx.strokeStyle = label === "Fermer" ? "rgba(238, 244, 239, 0.24)" : "rgba(82, 224, 121, 0.48)";
+function drawPopupIconButton(bounds, label) {
+  ctx.fillStyle = "rgba(82, 224, 121, 0.12)";
+  ctx.strokeStyle = "rgba(82, 224, 121, 0.48)";
   ctx.lineWidth = 1.5;
-  roundRect(bounds.x, bounds.y, bounds.width, bounds.height, 12);
+  ctx.beginPath();
+  ctx.arc(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, bounds.width / 2 - 2, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = label === "Fermer" ? "rgba(238, 244, 239, 0.86)" : "#8dff6f";
-  ctx.font = "700 14px ui-sans-serif, system-ui";
+  ctx.fillStyle = "#8dff6f";
+  ctx.font = "700 22px ui-sans-serif, system-ui";
   ctx.textAlign = "center";
-  ctx.fillText(label, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 + 5);
+  ctx.fillText(label, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 + 7);
 }
 
 function pointInBounds(x, y, bounds) {
