@@ -483,6 +483,7 @@ canvas.addEventListener("click", (event) => {
 
 document.getElementById("range-control").addEventListener("change", (event) => {
   state.rangeKm = Number(event.target.value);
+  renderMapTiles();
   fetchLiveTraffic(true);
 });
 
@@ -563,7 +564,8 @@ function renderMapTiles() {
 
   const width = mapLayer.clientWidth || 560;
   const height = mapLayer.clientHeight || width;
-  const zoom = state.mapZoom;
+  const zoom = zoomForRange(state.rangeKm, state.mapCenter.lat, width);
+  state.mapZoom = zoom;
   const centerPx = lonLatToPixel(state.mapCenter.lat, state.mapCenter.lon, zoom);
   const topLeft = {
     x: centerPx.x - width / 2,
@@ -596,6 +598,14 @@ function renderMapTiles() {
   }
 
   mapLayer.appendChild(fragment);
+}
+
+function zoomForRange(rangeKm, lat, widthPx) {
+  const radarRadiusPx = Math.max(160, widthPx * 0.405);
+  const targetMetersPerPixel = (rangeKm * 1000) / radarRadiusPx;
+  const latitudeScale = Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  const rawZoom = Math.log2((156543.03392 * latitudeScale) / targetMetersPerPixel);
+  return Math.max(7, Math.min(13, Math.round(rawZoom)));
 }
 
 async function geocodePostalCode(postalCode) {
