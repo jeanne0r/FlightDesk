@@ -11,6 +11,7 @@
 - [ ] adaptateur graphique Waveshare réel
 
 ## v0.2 — Écran et tactile
+- [x] simulateur web de l'interface
 - [ ] LVGL
 - [ ] radar vert 480 × 480
 - [ ] rémanence du balayage

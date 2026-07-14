@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FlightDesk Simulator</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="radar-stage" aria-label="Simulateur radar FlightDesk">
+        <div class="device">
+          <canvas id="radar" width="720" height="720" aria-label="Radar FlightDesk simulé"></canvas>
+          <div class="screen-glass"></div>
+          <div class="device-nav" aria-label="Navigation écran">
+            <button class="nav-button active" data-mode="radar" type="button">Radar</button>
+            <button class="nav-button" data-mode="search" type="button">Recherche</button>
+            <button class="nav-button" data-mode="favorites" type="button">Favoris</button>
+            <button class="nav-button" data-mode="settings" type="button">Réglages</button>
+            <button class="nav-button" data-mode="assistant" type="button">Assistant</button>
+          </div>
+        </div>
+        <div class="stand"></div>
+      </section>
+
+      <aside class="panel" aria-label="Contrôles du simulateur">
+        <header class="panel-header">
+          <p class="eyebrow">FlightDesk preview</p>
+          <h1>Radar aérien personnel</h1>
+          <p>Données trafic simulées, prêtes à remplacer par un fournisseur Internet.</p>
+        </header>
+
+        <section class="status-grid" aria-label="État radar">
+          <div>
+            <span>Avions</span>
+            <strong id="aircraft-count">0</strong>
+          </div>
+          <div>
+            <span>Rayon</span>
+            <strong><span id="range-label">50</span> km</strong>
+          </div>
+          <div>
+            <span>Mode</span>
+            <strong id="mode-label">Radar</strong>
+          </div>
+        </section>
+
+        <section class="selected-card" aria-label="Vol sélectionné">
+          <p class="eyebrow">Vol sélectionné</p>
+          <div id="selected-empty" class="empty-state">Touchez un avion sur le radar.</div>
+          <div id="selected-flight" class="flight-details hidden">
+            <div class="flight-title">
+              <strong id="selected-callsign">LX281</strong>
+              <button id="favorite-toggle" class="icon-button" type="button" aria-label="Ajouter aux favoris">☆</button>
+            </div>
+            <dl>
+              <div><dt>Compagnie</dt><dd id="selected-airline">-</dd></div>
+              <div><dt>Distance</dt><dd><span id="selected-distance">-</span> km</dd></div>
+              <div><dt>Altitude</dt><dd><span id="selected-altitude">-</span> m</dd></div>
+              <div><dt>Vitesse</dt><dd><span id="selected-speed">-</span> km/h</dd></div>
+              <div><dt>Cap</dt><dd><span id="selected-heading">-</span>°</dd></div>
+            </dl>
+          </div>
+        </section>
+
+        <section class="controls" aria-label="Réglages">
+          <label>
+            Rayon radar
+            <select id="range-control">
+              <option value="20">20 km</option>
+              <option value="50" selected>50 km</option>
+              <option value="100">100 km</option>
+              <option value="250">250 km</option>
+            </select>
+          </label>
+          <label>
+            Intensité radar
+            <input id="brightness-control" type="range" min="35" max="100" value="82">
+          </label>
+          <label>
+            Volume
+            <input id="volume-control" type="range" min="0" max="100" value="55">
+          </label>
+          <label class="toggle-row">
+            <span>Mode nuit</span>
+            <input id="night-control" type="checkbox" checked>
+          </label>
+          <label class="toggle-row">
+            <span>Muet</span>
+            <input id="mute-control" type="checkbox">
+          </label>
+        </section>
+
+        <section class="assistant-card" aria-label="Assistant Gemini">
+          <p class="eyebrow">Assistant Gemini</p>
+          <div class="prompt-row">
+            <input id="assistant-input" type="text" value="Quel est le vol le plus proche ?">
+            <button id="ask-button" type="button">Demander</button>
+          </div>
+          <p id="assistant-answer" class="assistant-answer">Sélectionnez un avion ou posez une question au simulateur.</p>
+        </section>
+      </aside>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

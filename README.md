@@ -45,6 +45,20 @@ annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 6. Avant le premier flash réel, reporter dans `include/board_pins.h` les broches
    de l'exemple officiel Waveshare correspondant exactement à la révision reçue.
 
+## Preview simulateur
+
+Un simulateur web permet de travailler l'interface avant réception du matériel :
+
+```bash
+cd simulator
+python3 -m http.server 4173
+```
+
+Puis ouvrir `http://127.0.0.1:4173`.
+
+Le simulateur couvre déjà le radar animé, les avions simulés, la sélection d'un
+vol, les favoris, les réglages principaux et une réponse Gemini simulée.
+
 ## Structure
 
 ```text
@@ -59,6 +73,7 @@ FlightDesk/
 │   ├── src/
 │   └── platformio.ini
 ├── hardware/
+├── simulator/
 ├── LICENSE
 └── README.md
 ```
@@ -66,7 +81,7 @@ FlightDesk/
 ## Roadmap courte
 
 - `v0.1` : architecture PlatformIO, modèle avion, radar simulé, réglages.
-- `v0.2` : intégration écran Waveshare, LVGL, tactile et menu réglages.
+- `v0.2` : simulateur web, intégration écran Waveshare, LVGL et tactile.
 - `v0.3` : Wi-Fi, position maison, fournisseur Internet et cache réseau.
 - `v0.4` : pipeline audio INMP441 / MAX98357A.
 - `v0.5` : Gemini, transcription, réponses vocales et contexte avions.

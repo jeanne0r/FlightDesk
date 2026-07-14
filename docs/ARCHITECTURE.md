@@ -11,6 +11,8 @@ API trafic Internet / trafic simulé
           |
           +------> DisplayAdapter / LVGL
           |
+          +------> simulateur web
+          |
           +------> GeminiClient
           |
           +------> AudioManager
