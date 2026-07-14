@@ -15,7 +15,8 @@ annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 ## Expérience visée
 
 - Radar vert animé inspiré d'un scope aérien compact.
-- Suivi des avions proches via ADS-B, avec rayon 20 / 50 / 100 / 250 km.
+- Suivi des avions proches via données ADS-B récupérées par Internet, avec
+  rayon 20 / 50 / 100 / 250 km.
 - Sélection tactile d'un avion pour afficher indicatif, compagnie, distance,
   altitude, vitesse et direction.
 - Favoris pour mettre certains vols en avant.
@@ -30,7 +31,7 @@ annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 - Microphone I2S INMP441.
 - Amplificateur audio I2S MAX98357A.
 - Haut-parleur 40 mm, 4 Ω / 3 W.
-- Récepteur ADS-B configurable ou fournisseur réseau selon l'étape du projet.
+- Fournisseur de données trafic via Internet.
 - Boîtier imprimé en 3D.
 - Alimentation USB-C 5 V / 2 A.
 
@@ -66,7 +67,7 @@ FlightDesk/
 
 - `v0.1` : architecture PlatformIO, modèle avion, radar simulé, réglages.
 - `v0.2` : intégration écran Waveshare, LVGL, tactile et menu réglages.
-- `v0.3` : Wi-Fi, position maison, fournisseur ADS-B et cache réseau.
+- `v0.3` : Wi-Fi, position maison, fournisseur Internet et cache réseau.
 - `v0.4` : pipeline audio INMP441 / MAX98357A.
 - `v0.5` : Gemini, transcription, réponses vocales et contexte avions.
 - `v1.0` : OTA, boîtier imprimé, guide de montage et release publique.
@@ -75,7 +76,7 @@ La roadmap détaillée est dans [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Sécurité des clés
 
-Ne jamais publier une clé Gemini, Wi-Fi ou fournisseur ADS-B dans GitHub.
+Ne jamais publier une clé Gemini, Wi-Fi ou fournisseur trafic dans GitHub.
 `firmware/include/secrets.h` est ignoré par Git. Seul
 `firmware/include/secrets.example.h` doit rester versionné.
 

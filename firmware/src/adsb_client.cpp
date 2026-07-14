@@ -9,7 +9,7 @@ bool AdsbClient::begin() {
 }
 
 bool AdsbClient::update(const Settings& settings) {
-    // V0 : trafic simulé. L'API ADS-B réelle sera ajoutée dans un module séparé.
+    // V0 : trafic simulé. Le fournisseur Internet réel sera ajouté dans un module séparé.
     createDemoTraffic(settings);
     last_error_ = "";
     return true;

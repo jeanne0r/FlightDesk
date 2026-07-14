@@ -19,10 +19,10 @@
 - [ ] menu Réglages
 - [ ] volume et muet
 
-## v0.3 — Réseau et ADS-B
+## v0.3 — Réseau et trafic Internet
 - [ ] portail Wi-Fi
 - [ ] position de la maison
-- [ ] fournisseur ADS-B configurable
+- [ ] fournisseur de données trafic configurable
 - [ ] cache et limitation des appels
 - [ ] gestion des erreurs réseau
 
