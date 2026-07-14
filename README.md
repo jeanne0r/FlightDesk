@@ -1,59 +1,83 @@
 # FlightDesk
 
-Radar aérien de bureau DIY basé sur un **Waveshare ESP32-S3 Touch LCD 2.8C**, avec affichage radar vert, données ADS-B, tactile et assistant vocal Gemini.
+![FlightDesk overview](docs/assets/flightdesk-overview.jpg)
 
-> État actuel : squelette initial du projet. La logique radar, les réglages persistants et le simulateur de trafic sont présents. L'adaptateur matériel exact de l'écran Waveshare sera finalisé à partir de l'exemple constructeur livré avec la carte afin d'éviter d'inventer un brochage.
+**FlightDesk** est un radar aérien personnel de bureau basé sur un écran tactile
+rond **Waveshare ESP32-S3 Touch LCD 2.8C**. L'objectif : visualiser les avions
+autour de chez soi en temps réel, sélectionner un vol au toucher, écouter des
+annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 
-## Objectif
+> État actuel : squelette initial du projet. La logique radar, les réglages
+> persistants et le simulateur de trafic sont présents. L'adaptateur matériel
+> exact de l'écran Waveshare sera finalisé à partir de l'exemple constructeur
+> livré avec la carte afin d'éviter d'inventer un brochage.
 
-- radar vert animé ;
-- avions autour d'une position configurable ;
-- sélection tactile d'un avion ;
-- rayon 20 / 50 / 100 / 250 km ;
-- menu Réglages ;
-- volume et mode muet logiciels ;
-- micro I2S INMP441 ;
-- ampli I2S MAX98357A et haut-parleur 4 Ω / 3 W ;
-- interrogation vocale Gemini à la demande ;
-- configuration Wi-Fi initiale ;
-- mises à jour OTA.
+## Expérience visée
+
+- Radar vert animé inspiré d'un scope aérien compact.
+- Suivi des avions proches via ADS-B, avec rayon 20 / 50 / 100 / 250 km.
+- Sélection tactile d'un avion pour afficher indicatif, compagnie, distance,
+  altitude, vitesse et direction.
+- Favoris pour mettre certains vols en avant.
+- Assistant vocal Gemini pour interroger les avions visibles.
+- Annonces vocales via micro I2S INMP441, ampli MAX98357A et haut-parleur.
+- Réglages embarqués : position maison, rayon, intensité radar, mode nuit,
+  volume, muet, langue, Wi-Fi et OTA.
 
 ## Matériel prévu
 
-- Waveshare ESP32-S3 Touch LCD 2.8C ;
-- INMP441 ;
-- MAX98357A ;
-- haut-parleur 40 mm, 4 Ω / 3 W ;
-- fils et connecteurs ;
-- boîtier imprimé en 3D ;
-- alimentation USB-C 5 V / 2 A.
+- Waveshare ESP32-S3 Touch LCD 2.8C.
+- Microphone I2S INMP441.
+- Amplificateur audio I2S MAX98357A.
+- Haut-parleur 40 mm, 4 Ω / 3 W.
+- Récepteur ADS-B configurable ou fournisseur réseau selon l'étape du projet.
+- Boîtier imprimé en 3D.
+- Alimentation USB-C 5 V / 2 A.
 
-## Démarrage
+## Démarrage firmware
 
 1. Installer VS Code et PlatformIO.
 2. Ouvrir le dossier `firmware`.
 3. Copier `include/secrets.example.h` vers `include/secrets.h`.
-4. Compiler l'environnement `flightdesk`.
-5. Avant le premier flash réel, reporter dans `include/board_pins.h` les broches de l'exemple officiel Waveshare correspondant exactement à la révision reçue.
+4. Renseigner les secrets localement, sans les publier.
+5. Compiler l'environnement `flightdesk`.
+6. Avant le premier flash réel, reporter dans `include/board_pins.h` les broches
+   de l'exemple officiel Waveshare correspondant exactement à la révision reçue.
 
 ## Structure
 
 ```text
 FlightDesk/
+├── docs/
+│   ├── assets/
+│   ├── ARCHITECTURE.md
+│   └── ROADMAP.md
+├── enclosure/
 ├── firmware/
 │   ├── include/
 │   ├── src/
 │   └── platformio.ini
 ├── hardware/
-├── enclosure/
-├── docs/
 ├── LICENSE
 └── README.md
 ```
 
+## Roadmap courte
+
+- `v0.1` : architecture PlatformIO, modèle avion, radar simulé, réglages.
+- `v0.2` : intégration écran Waveshare, LVGL, tactile et menu réglages.
+- `v0.3` : Wi-Fi, position maison, fournisseur ADS-B et cache réseau.
+- `v0.4` : pipeline audio INMP441 / MAX98357A.
+- `v0.5` : Gemini, transcription, réponses vocales et contexte avions.
+- `v1.0` : OTA, boîtier imprimé, guide de montage et release publique.
+
+La roadmap détaillée est dans [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Sécurité des clés
 
-Ne jamais publier une clé Gemini dans GitHub. `secrets.h` est ignoré par Git.
+Ne jamais publier une clé Gemini, Wi-Fi ou fournisseur ADS-B dans GitHub.
+`firmware/include/secrets.h` est ignoré par Git. Seul
+`firmware/include/secrets.example.h` doit rester versionné.
 
 ## Licence
 
