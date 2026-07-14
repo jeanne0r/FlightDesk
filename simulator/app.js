@@ -93,7 +93,16 @@ const elements = {
   favoriteToggle: document.getElementById("favorite-toggle"),
   assistantAnswer: document.getElementById("assistant-answer"),
   mapStatus: document.getElementById("map-status"),
-  trafficSummary: document.getElementById("traffic-summary")
+  trafficSummary: document.getElementById("traffic-summary"),
+  popup: document.getElementById("flight-popup"),
+  popupClose: document.getElementById("popup-close"),
+  popupCallsign: document.getElementById("popup-callsign"),
+  popupFavorite: document.getElementById("popup-favorite"),
+  popupAirline: document.getElementById("popup-airline"),
+  popupDistance: document.getElementById("popup-distance"),
+  popupAltitude: document.getElementById("popup-altitude"),
+  popupSpeed: document.getElementById("popup-speed"),
+  popupHeading: document.getElementById("popup-heading")
 };
 
 document.getElementById("postal-control").value = state.postalCode;
@@ -436,6 +445,7 @@ function updatePanel() {
   if (!selected) {
     elements.selectedEmpty.classList.remove("hidden");
     elements.selectedFlight.classList.add("hidden");
+    closeFlightPopup();
     return;
   }
 
@@ -448,11 +458,32 @@ function updatePanel() {
   elements.selectedSpeed.textContent = Math.round(selected.speed);
   elements.selectedHeading.textContent = Math.round(selected.heading);
   elements.favoriteToggle.textContent = state.favorites.has(selected.id) ? "★" : "☆";
+  updateFlightPopup(selected);
 }
 
 function airlineFromCallsign(callsign) {
   const prefix = callsign.replace(/[0-9].*$/, "");
   return airlines[prefix] || "Compagnie inconnue";
+}
+
+function updateFlightPopup(aircraft) {
+  if (elements.popup.classList.contains("hidden") || !aircraft) return;
+  elements.popupCallsign.textContent = aircraft.callsign;
+  elements.popupAirline.textContent = aircraft.airline || airlineFromCallsign(aircraft.callsign);
+  elements.popupDistance.textContent = Math.round(aircraft.distance);
+  elements.popupAltitude.textContent = Math.round(aircraft.altitude);
+  elements.popupSpeed.textContent = Math.round(aircraft.speed);
+  elements.popupHeading.textContent = Math.round(aircraft.heading);
+  elements.popupFavorite.textContent = state.favorites.has(aircraft.id) ? "★" : "☆";
+}
+
+function openFlightPopup(aircraft) {
+  elements.popup.classList.remove("hidden");
+  updateFlightPopup(aircraft);
+}
+
+function closeFlightPopup() {
+  elements.popup.classList.add("hidden");
 }
 
 function animate(timestamp) {
@@ -482,7 +513,10 @@ canvas.addEventListener("click", (event) => {
     }
   });
 
-  if (nearest) state.selectedId = nearest.id;
+  if (nearest) {
+    state.selectedId = nearest.id;
+    openFlightPopup(nearest);
+  }
 });
 
 document.getElementById("range-control").addEventListener("change", (event) => {
@@ -533,6 +567,20 @@ elements.favoriteToggle.addEventListener("click", () => {
   }
   saveFavorites();
 });
+
+elements.popupFavorite.addEventListener("click", () => {
+  if (!state.selectedId) return;
+  if (state.favorites.has(state.selectedId)) {
+    state.favorites.delete(state.selectedId);
+  } else {
+    state.favorites.add(state.selectedId);
+  }
+  saveFavorites();
+  const selected = state.aircraft.find((aircraft) => aircraft.id === state.selectedId);
+  updateFlightPopup(selected);
+});
+
+elements.popupClose.addEventListener("click", closeFlightPopup);
 
 document.getElementById("ask-button").addEventListener("click", () => {
   const visible = state.aircraft.filter((aircraft) => aircraft.visible);
