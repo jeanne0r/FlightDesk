@@ -48,6 +48,7 @@ const state = {
   popupBounds: null,
   popupCloseBounds: null,
   popupFavoriteBounds: null,
+  settingsHitZones: [],
   mode: "radar",
   sweepDeg: 0,
   selectedId: null,
@@ -271,6 +272,7 @@ function drawRadar() {
   drawHome(center);
   drawAircraft();
   drawOverlayText(center);
+  if (state.mode === "settings") drawSettingsScreen(center, radius);
   drawScreenPopup(center, radius);
 }
 
@@ -384,6 +386,7 @@ function drawOverlayText(center) {
   ctx.fillText("AVIONS", center, 210);
 
   if (state.mode !== "radar") {
+    if (state.mode === "settings") return;
     ctx.fillStyle = "rgba(3, 9, 5, 0.72)";
     roundRect(center - 128, center - 38, 256, 76, 14);
     ctx.fill();
@@ -424,6 +427,93 @@ function modeSubtitle(mode) {
     settings: "Rayon, volume, luminosité",
     assistant: "Question vocale simulée"
   }[mode] || "Temps réel simulé";
+}
+
+function drawSettingsScreen(center, radius) {
+  const width = radius * 1.22;
+  const height = radius * 1.08;
+  const x = center - width / 2;
+  const y = center - height / 2 + radius * 0.02;
+  state.settingsHitZones = [];
+
+  ctx.save();
+  ctx.fillStyle = "rgba(4, 10, 6, 0.91)";
+  ctx.strokeStyle = "rgba(82, 224, 121, 0.42)";
+  ctx.lineWidth = 2;
+  roundRect(x, y, width, height, 18);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#8dff6f";
+  ctx.font = "700 18px ui-sans-serif, system-ui";
+  ctx.textAlign = "left";
+  ctx.fillText("RÉGLAGES", x + 22, y + 34);
+
+  drawSettingRow(x + 22, y + 66, "Code postal", state.postalCode);
+  drawRangeControl(x + 22, y + 108, width - 44);
+  drawToggleControl(x + 22, y + 178, width - 44, "Mode nuit", state.night, "night");
+  drawToggleControl(x + 22, y + 226, width - 44, "Muet", state.muted, "mute");
+
+  ctx.fillStyle = "rgba(238, 244, 239, 0.48)";
+  ctx.font = "12px ui-sans-serif, system-ui";
+  ctx.fillText("Touchez un rayon ou un interrupteur.", x + 22, y + height - 22);
+  ctx.restore();
+}
+
+function drawSettingRow(x, y, label, value) {
+  ctx.fillStyle = "rgba(238, 244, 239, 0.52)";
+  ctx.font = "12px ui-sans-serif, system-ui";
+  ctx.fillText(label, x, y);
+  ctx.fillStyle = "#eef4ef";
+  ctx.font = "700 18px ui-sans-serif, system-ui";
+  ctx.fillText(String(value), x, y + 23);
+}
+
+function drawRangeControl(x, y, width) {
+  ctx.fillStyle = "rgba(238, 244, 239, 0.52)";
+  ctx.font = "12px ui-sans-serif, system-ui";
+  ctx.fillText("Rayon radar", x, y);
+  const ranges = [20, 50, 100, 250];
+  const gap = 8;
+  const pillWidth = (width - gap * 3) / 4;
+  ranges.forEach((range, index) => {
+    const px = x + index * (pillWidth + gap);
+    const py = y + 16;
+    const active = state.rangeKm === range;
+    ctx.fillStyle = active ? "rgba(82, 224, 121, 0.28)" : "rgba(255, 255, 255, 0.06)";
+    ctx.strokeStyle = active ? "rgba(141, 255, 111, 0.78)" : "rgba(238, 244, 239, 0.18)";
+    ctx.lineWidth = 1.5;
+    roundRect(px, py, pillWidth, 34, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = active ? "#8dff6f" : "rgba(238, 244, 239, 0.70)";
+    ctx.font = "700 14px ui-sans-serif, system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(`${range}`, px + pillWidth / 2, py + 22);
+    state.settingsHitZones.push({ type: "range", value: range, x: px, y: py, width: pillWidth, height: 34 });
+  });
+  ctx.textAlign = "left";
+}
+
+function drawToggleControl(x, y, width, label, active, type) {
+  ctx.fillStyle = "rgba(238, 244, 239, 0.72)";
+  ctx.font = "700 16px ui-sans-serif, system-ui";
+  ctx.textAlign = "left";
+  ctx.fillText(label, x, y + 23);
+  const tx = x + width - 64;
+  const ty = y;
+  ctx.fillStyle = active ? "rgba(82, 224, 121, 0.90)" : "rgba(255, 255, 255, 0.08)";
+  ctx.strokeStyle = active ? "rgba(141, 255, 111, 0.8)" : "rgba(238, 244, 239, 0.32)";
+  ctx.lineWidth = 1.5;
+  roundRect(tx, ty, 56, 32, 16);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = active ? "#041006" : "rgba(238, 244, 239, 0.76)";
+  ctx.font = "700 18px ui-sans-serif, system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText(active ? "✓" : "×", tx + 28, ty + 23);
+  state.settingsHitZones.push({ type, x: tx - 8, y: ty - 8, width: 72, height: 48 });
+  ctx.textAlign = "left";
 }
 
 function updatePanel() {
@@ -477,6 +567,28 @@ canvas.addEventListener("click", (event) => {
   const x = (event.clientX - rect.left) * scale;
   const y = (event.clientY - rect.top) * scale;
 
+  if (state.mode === "settings") {
+    const zone = state.settingsHitZones.find((item) => pointInBounds(x, y, item));
+    if (zone?.type === "range") {
+      state.rangeKm = zone.value;
+      document.getElementById("range-control").value = String(zone.value);
+      renderMapTiles();
+      fetchLiveTraffic(true);
+      return;
+    }
+    if (zone?.type === "night") {
+      state.night = !state.night;
+      document.getElementById("night-control").checked = state.night;
+      return;
+    }
+    if (zone?.type === "mute") {
+      state.muted = !state.muted;
+      document.getElementById("mute-control").checked = state.muted;
+      return;
+    }
+    return;
+  }
+
   if (state.popupOpen) {
     if (pointInBounds(x, y, state.popupCloseBounds)) {
       state.popupOpen = false;
@@ -492,7 +604,7 @@ canvas.addEventListener("click", (event) => {
   }
 
   let nearest = null;
-  let nearestDistance = 34;
+  let nearestDistance = 64;
 
   state.aircraft.filter((aircraft) => aircraft.visible).forEach((aircraft) => {
     const point = polarToCanvas(aircraft.bearing, aircraft.distance);
@@ -697,7 +809,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 function drawScreenPopup(center, radius) {
-  if (!state.popupOpen || !state.selectedId) return;
+  if (state.mode !== "radar" || !state.popupOpen || !state.selectedId) return;
   const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
   if (!aircraft) return;
 
