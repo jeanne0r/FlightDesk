@@ -275,7 +275,7 @@ function drawRadar() {
   drawOverlayText(center);
   if (state.mode === "settings") drawSettingsScreen(center, radius);
   drawScreenPopup(center, radius);
-  drawScreenNav(center, radius);
+  if (!state.popupOpen) drawScreenNav(center, radius);
 }
 
 function drawSweep(center, radius, intensity) {
@@ -860,13 +860,13 @@ function drawScreenPopup(center, radius) {
   const aircraft = state.aircraft.find((item) => item.id === state.selectedId);
   if (!aircraft) return;
 
-  const width = radius * 1.00;
-  const height = radius * 0.70;
+  const width = radius * 0.94;
+  const height = radius * 0.62;
   const x = center - width / 2;
-  const y = center - radius * 0.10;
+  const y = center - radius * 0.12;
   state.popupBounds = { x, y, width, height };
-  state.popupCloseBounds = { x: x + width - 56, y: y + 12, width: 40, height: 40 };
-  state.popupFavoriteBounds = { x: x + width - 104, y: y + 12, width: 40, height: 40 };
+  state.popupCloseBounds = { x: x + width - 52, y: y + 12, width: 38, height: 38 };
+  state.popupFavoriteBounds = { x: x + width - 98, y: y + 12, width: 38, height: 38 };
 
   ctx.save();
   ctx.fillStyle = "rgba(4, 10, 6, 0.92)";
@@ -882,15 +882,15 @@ function drawScreenPopup(center, radius) {
   ctx.fillStyle = "rgba(141, 255, 111, 0.78)";
   ctx.font = "700 13px ui-sans-serif, system-ui";
   ctx.textAlign = "left";
-  ctx.fillText("AVION SÉLECTIONNÉ", x + 18, y + 30);
+  ctx.fillText("AVION SÉLECTIONNÉ", x + 16, y + 28);
 
   ctx.fillStyle = "#8dff6f";
-  ctx.font = "700 30px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.callsign, x + 18, y + 72);
+  ctx.font = "700 28px ui-sans-serif, system-ui";
+  ctx.fillText(aircraft.callsign, x + 16, y + 68);
 
   ctx.fillStyle = "rgba(238, 244, 239, 0.74)";
   ctx.font = "15px ui-sans-serif, system-ui";
-  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 18, y + 98);
+  ctx.fillText(aircraft.airline || airlineFromCallsign(aircraft.callsign), x + 16, y + 92);
 
   drawPopupButton(state.popupFavoriteBounds, state.favorites.has(aircraft.id) ? "★" : "☆");
   drawPopupButton(state.popupCloseBounds, "×");
@@ -901,17 +901,17 @@ function drawScreenPopup(center, radius) {
     ["VIT", `${Math.round(aircraft.speed)} km/h`],
     ["CAP", `${Math.round(aircraft.heading)}°`]
   ];
-  const cellWidth = (width - 40) / 2;
+  const cellWidth = (width - 34) / 2;
   metrics.forEach((metric, index) => {
     const col = index % 2;
     const row = Math.floor(index / 2);
-    const mx = x + 20 + col * cellWidth;
-    const my = y + 132 + row * 42;
+    const mx = x + 16 + col * cellWidth;
+    const my = y + 122 + row * 38;
     ctx.fillStyle = "rgba(238, 244, 239, 0.46)";
     ctx.font = "12px ui-sans-serif, system-ui";
     ctx.fillText(metric[0], mx, my);
     ctx.fillStyle = "#eef4ef";
-    ctx.font = "700 17px ui-sans-serif, system-ui";
+    ctx.font = "700 16px ui-sans-serif, system-ui";
     ctx.fillText(metric[1], mx, my + 21);
   });
 
