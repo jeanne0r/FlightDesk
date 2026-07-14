@@ -241,8 +241,7 @@ async function fetchLiveTraffic(force = false) {
     const aircraft = (payload.states || []).map(normalizeOpenSkyState).filter(Boolean);
     state.liveAircraft = aircraft
       .filter((item) => item.distance <= state.rangeKm && !item.onGround)
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, 48);
+      .sort((a, b) => a.distance - b.distance);
     state.trafficSource = "live";
     state.trafficStatus = `${state.liveAircraft.length} avion(s) live OpenSky`;
   } catch (error) {
