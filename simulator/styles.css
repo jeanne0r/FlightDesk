@@ -198,10 +198,17 @@ h1 {
   line-height: 1.02;
 }
 
-.panel-header p:last-child {
+.panel-header p:not(.eyebrow) {
   margin: 12px 0 0;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.build-label {
+  display: block;
+  margin-top: 10px;
+  color: rgba(141, 255, 111, 0.72);
+  font-size: 12px;
 }
 
 .status-grid {

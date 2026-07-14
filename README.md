@@ -54,7 +54,7 @@ cd simulator
 python3 -m http.server 4173
 ```
 
-Puis ouvrir `http://127.0.0.1:4173`.
+Puis ouvrir `http://127.0.0.1:4173/live`.
 
 Le simulateur couvre déjà le radar animé, une vraie carte OpenStreetMap en
 filigrane vert, le trafic live via OpenSky, la sélection d'un vol, les favoris,
