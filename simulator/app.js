@@ -31,8 +31,34 @@ const swissPostalCenters = {
   "9000": { label: "Saint-Gall", lat: 47.4245, lon: 9.3767 }
 };
 
+function storedRange() {
+  const value = Number(localStorage.getItem("flightdesk:rangeKm"));
+  return [20, 50, 100, 250].includes(value) ? value : 50;
+}
+
+function storedMapCenter() {
+  try {
+    const value = JSON.parse(localStorage.getItem("flightdesk:mapCenter") || "null");
+    if (typeof value?.lat === "number" && typeof value?.lon === "number") {
+      return { label: value.label || "Carte déplacée", lat: value.lat, lon: value.lon };
+    }
+  } catch (error) {
+    return null;
+  }
+  return null;
+}
+
+function saveMapCenter() {
+  if (!state.mapCenter) return;
+  localStorage.setItem("flightdesk:mapCenter", JSON.stringify({
+    label: state.mapCenter.label,
+    lat: state.mapCenter.lat,
+    lon: state.mapCenter.lon
+  }));
+}
+
 const state = {
-  rangeKm: 50,
+  rangeKm: storedRange(),
   brightness: 82,
   volume: 55,
   night: true,
@@ -84,12 +110,11 @@ const demoFlights = [
 ];
 
 const trafficPollMs = 18000;
-const panFetchMs = 900;
 let postalInputTimer = null;
 let postalLookupId = 0;
-let lastPanFetchMs = 0;
 let pointerState = null;
 let suppressNextClick = false;
+let initialStoredMapCenter = storedMapCenter();
 
 const elements = {
   count: document.getElementById("aircraft-count"),
@@ -111,6 +136,7 @@ const elements = {
 };
 
 document.getElementById("postal-control").value = state.postalCode;
+document.getElementById("range-control").value = String(state.rangeKm);
 setPostalCode(state.postalCode);
 
 function saveFavorites() {
@@ -674,12 +700,14 @@ canvas.addEventListener("pointermove", (event) => {
   event.preventDefault();
   suppressNextClick = true;
   state.popupOpen = false;
-  panMapFromPointer(dx, dy, pointerState.startCenter);
+  panMapFromPointer(dx, dy, pointerState.startCenter, true);
 });
 
 canvas.addEventListener("pointerup", (event) => {
   if (!pointerState || pointerState.id !== event.pointerId) return;
   if (pointerState.dragging) {
+    const point = canvasPoint(event);
+    panMapFromPointer(point.x - pointerState.startX, point.y - pointerState.startY, pointerState.startCenter, false);
     fetchLiveTraffic(true);
   }
   canvas.releasePointerCapture?.(event.pointerId);
@@ -688,6 +716,10 @@ canvas.addEventListener("pointerup", (event) => {
 
 canvas.addEventListener("pointercancel", (event) => {
   if (pointerState?.id === event.pointerId) {
+    if (pointerState.dragging) {
+      setMapTileOffset(0, 0);
+      renderMapTiles();
+    }
     canvas.releasePointerCapture?.(event.pointerId);
     pointerState = null;
   }
@@ -738,6 +770,7 @@ canvas.addEventListener("click", (event) => {
     }
     if (zone?.type === "range") {
       state.rangeKm = zone.value;
+      localStorage.setItem("flightdesk:rangeKm", String(state.rangeKm));
       document.getElementById("range-control").value = String(zone.value);
       renderMapTiles();
       fetchLiveTraffic(true);
@@ -844,6 +877,7 @@ function ensureAircraftImage(id, src) {
 
 document.getElementById("range-control").addEventListener("change", (event) => {
   state.rangeKm = Number(event.target.value);
+  localStorage.setItem("flightdesk:rangeKm", String(state.rangeKm));
   renderMapTiles();
   fetchLiveTraffic(true);
 });
@@ -851,6 +885,8 @@ document.getElementById("range-control").addEventListener("change", (event) => {
 document.getElementById("postal-control").addEventListener("input", (event) => {
   const nextCode = event.target.value.trim() || "1000";
   state.postalCode = nextCode;
+  localStorage.removeItem("flightdesk:mapCenter");
+  initialStoredMapCenter = null;
   elements.postalLabel.textContent = nextCode;
   elements.mapStatus.textContent = `Carte en attente pour ${nextCode}…`;
   window.clearTimeout(postalInputTimer);
@@ -936,12 +972,14 @@ function isMapAwayFromHome() {
 function recenterMap() {
   if (!state.homeCenter) return;
   state.mapCenter = { ...state.homeCenter };
+  setMapTileOffset(0, 0);
+  saveMapCenter();
   elements.mapStatus.textContent = `Carte recentrée sur ${state.postalCode} ${state.homeCenter.label}.`;
   renderMapTiles();
   fetchLiveTraffic(true);
 }
 
-function panMapFromPointer(deltaCanvasX, deltaCanvasY, startCenter) {
+function panMapFromPointer(deltaCanvasX, deltaCanvasY, startCenter, livePreview = false) {
   if (!startCenter || !state.mapCenter) return;
   const layerWidth = mapLayer.clientWidth || canvas.clientWidth || canvas.width;
   const layerHeight = mapLayer.clientHeight || layerWidth;
@@ -956,13 +994,21 @@ function panMapFromPointer(deltaCanvasX, deltaCanvasY, startCenter) {
     lon: ((next.lon + 540) % 360) - 180
   };
   elements.mapStatus.textContent = `Carte déplacée · centre ${state.mapCenter.lat.toFixed(3)}, ${state.mapCenter.lon.toFixed(3)}.`;
-  renderMapTiles();
 
-  const now = Date.now();
-  if (now - lastPanFetchMs > panFetchMs) {
-    lastPanFetchMs = now;
-    fetchLiveTraffic(true);
+  if (livePreview) {
+    setMapTileOffset(deltaX, deltaY);
+    return;
   }
+
+  setMapTileOffset(0, 0);
+  saveMapCenter();
+  renderMapTiles();
+}
+
+function setMapTileOffset(x, y) {
+  mapLayer.querySelectorAll("img").forEach((tile) => {
+    tile.style.transform = x || y ? `translate(${x}px, ${y}px)` : "";
+  });
 }
 
 function renderMapTiles() {
@@ -983,10 +1029,7 @@ function renderMapTiles() {
   const maxTileY = Math.floor((topLeft.y + height) / 256);
   const tileCount = 2 ** zoom;
   const fragment = document.createDocumentFragment();
-
-  while (mapLayer.firstChild) {
-    mapLayer.removeChild(mapLayer.firstChild);
-  }
+  let renderedTiles = 0;
 
   for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
     if (tileY < 0 || tileY >= tileCount) continue;
@@ -995,14 +1038,19 @@ function renderMapTiles() {
       const img = document.createElement("img");
       img.alt = "";
       img.decoding = "async";
-      img.loading = "lazy";
+      img.loading = "eager";
       img.src = apiUrl(`/api/tile/${zoom}/${wrappedX}/${tileY}.png`);
       img.style.left = `${Math.round(tileX * 256 - topLeft.x)}px`;
       img.style.top = `${Math.round(tileY * 256 - topLeft.y)}px`;
       fragment.appendChild(img);
+      renderedTiles += 1;
     }
   }
 
+  if (!renderedTiles) return;
+  while (mapLayer.firstChild) {
+    mapLayer.removeChild(mapLayer.firstChild);
+  }
   mapLayer.appendChild(fragment);
 }
 
@@ -1048,13 +1096,17 @@ async function setPostalCode(postalCode) {
     if (lookupId !== postalLookupId) return;
     if (!center) throw new Error("Postal code not found");
     state.homeCenter = center;
-    state.mapCenter = { ...center };
-    elements.mapStatus.textContent = `Carte réelle centrée sur ${cleanCode} ${center.label}.`;
+    state.mapCenter = initialStoredMapCenter ? { ...initialStoredMapCenter } : { ...center };
+    initialStoredMapCenter = null;
+    elements.mapStatus.textContent = isMapAwayFromHome()
+      ? `Carte restaurée · centre ${state.mapCenter.lat.toFixed(3)}, ${state.mapCenter.lon.toFixed(3)}.`
+      : `Carte réelle centrée sur ${cleanCode} ${center.label}.`;
     fetchLiveTraffic(true);
   } catch (error) {
     if (lookupId !== postalLookupId) return;
     state.homeCenter = swissPostalCenters["1000"];
-    state.mapCenter = { ...state.homeCenter };
+    state.mapCenter = initialStoredMapCenter ? { ...initialStoredMapCenter } : { ...state.homeCenter };
+    initialStoredMapCenter = null;
     elements.mapStatus.textContent = `Code postal non trouvé, carte centrée sur 1000 Lausanne.`;
     fetchLiveTraffic(true);
   }
