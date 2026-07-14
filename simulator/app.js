@@ -839,7 +839,11 @@ function ensureAircraftDetails(id) {
   if (current?.status === "ready" || current?.status === "loading") return;
 
   state.aircraftDetails.set(hex, { status: "loading" });
-  fetch(apiUrl(`/api/aircraft?hex=${encodeURIComponent(hex)}`), { cache: "no-store" })
+  const aircraft = state.aircraft.find((item) => String(item.id).toLowerCase() === hex);
+  const params = new URLSearchParams({ hex });
+  if (aircraft?.callsign) params.set("callsign", aircraft.callsign);
+
+  fetch(apiUrl(`/api/aircraft?${params.toString()}`), { cache: "no-store" })
     .then((response) => response.json().then((payload) => ({ response, payload })))
     .then(({ response, payload }) => {
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -848,12 +852,22 @@ function ensureAircraftDetails(id) {
         photo: payload.photo || null,
         type: payload.type || null,
         registration: payload.registration || null,
-        credit: payload.credit || null
+        credit: payload.credit || null,
+        origin: payload.origin || null,
+        destination: payload.destination || null
       });
       if (payload.photo) ensureAircraftImage(hex, payload.photo);
     })
     .catch(() => {
-      state.aircraftDetails.set(hex, { status: "error", photo: null, type: null, registration: null, credit: null });
+      state.aircraftDetails.set(hex, {
+        status: "error",
+        photo: null,
+        type: null,
+        registration: null,
+        credit: null,
+        origin: null,
+        destination: null
+      });
     });
 }
 
@@ -872,6 +886,16 @@ function ensureAircraftImage(id, src) {
   entry.image.src = src;
   state.aircraftImages.set(hex, entry);
   return entry;
+}
+
+function routeLabel(details) {
+  if (details?.origin?.code && details?.destination?.code) {
+    return `${details.origin.code} → ${details.destination.code}`;
+  }
+  if (details?.status === "loading") {
+    return "ROUTE EN RECHERCHE";
+  }
+  return "ROUTE INCONNUE";
 }
 
 document.getElementById("range-control").addEventListener("change", (event) => {
@@ -1169,6 +1193,10 @@ function drawScreenPopup(center, radius) {
   ctx.fillStyle = "rgba(238, 244, 239, 0.58)";
   ctx.font = "700 12px ui-sans-serif, system-ui";
   fittedText(details?.type || "TYPE EN RECHERCHE", x + 16, y + 114, width * 0.50);
+
+  ctx.fillStyle = "#8dff6f";
+  ctx.font = "700 15px ui-sans-serif, system-ui";
+  fittedText(routeLabel(details), x + 16, y + 137, width * 0.50);
 
   const photoX = x + width - 124;
   const photoY = y + 58;

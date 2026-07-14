@@ -11,12 +11,15 @@ import re
 
 OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
 PLANESPOTTERS_URL = "https://api.planespotters.net/pub/photos/hex/{hex_code}"
+ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TRAFFIC_CACHE_SECONDS = 12
 AIRCRAFT_CACHE_SECONDS = 86400
+ROUTE_CACHE_SECONDS = 21600
 TILE_CACHE_SECONDS = 86400
 traffic_cache = {}
 aircraft_cache = {}
+route_cache = {}
 tile_cache = {}
 
 
@@ -102,6 +105,32 @@ def type_from_planespotters_link(link):
     return None
 
 
+def airport_summary(airport):
+    if not isinstance(airport, dict):
+        return None
+    code = airport.get("iata_code") or airport.get("icao_code")
+    if not code:
+        return None
+    return {
+        "code": code,
+        "icao": airport.get("icao_code"),
+        "iata": airport.get("iata_code"),
+        "city": airport.get("municipality"),
+        "name": airport.get("name"),
+        "country": airport.get("country_name"),
+    }
+
+
+def route_details_from_payload(payload):
+    route = ((payload or {}).get("response") or {}).get("flightroute")
+    if not isinstance(route, dict):
+        return {"origin": None, "destination": None}
+    return {
+        "origin": airport_summary(route.get("origin")),
+        "destination": airport_summary(route.get("destination")),
+    }
+
+
 class FlightDeskHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -166,12 +195,14 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
     def handle_aircraft(self, parsed):
         query = parse_qs(parsed.query)
         hex_code = ((query.get("hex") or [""])[0] or "").lower().strip()
+        callsign = re.sub(r"[^A-Za-z0-9]", "", ((query.get("callsign") or [""])[0] or "").upper())
         if not re.fullmatch(r"[0-9a-f]{6}", hex_code):
             self.write_json({"error": "invalid hex", "photo": None, "type": None}, status=400)
             return
 
         now = time()
-        cached = aircraft_cache.get(hex_code)
+        cache_key = (hex_code, callsign)
+        cached = aircraft_cache.get(cache_key)
         if cached and now - cached["created_at"] < AIRCRAFT_CACHE_SECONDS:
             self.write_json(cached["payload"])
             return
@@ -186,10 +217,37 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
                 raw = json.loads(response.read().decode("utf-8"))
                 photo = (raw.get("photos") or [None])[0]
                 payload = aircraft_details_from_photo(photo)
-                aircraft_cache[hex_code] = {"created_at": now, "payload": payload}
+                payload.update(self.route_for_callsign(callsign))
+                aircraft_cache[cache_key] = {"created_at": now, "payload": payload}
                 self.write_json(payload)
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
-            self.write_json({"error": str(error), "photo": None, "type": None}, status=502)
+            payload = {"error": str(error), "photo": None, "type": None}
+            payload.update(self.route_for_callsign(callsign))
+            self.write_json(payload)
+
+    def route_for_callsign(self, callsign):
+        if not callsign:
+            return {"origin": None, "destination": None}
+
+        now = time()
+        cached = route_cache.get(callsign)
+        if cached and now - cached["created_at"] < ROUTE_CACHE_SECONDS:
+            return cached["payload"]
+
+        request = Request(ADSBDB_CALLSIGN_URL.format(callsign=callsign), headers={
+            "Accept": "application/json",
+            "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+        })
+
+        try:
+            with urlopen(request, timeout=6) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+                payload = route_details_from_payload(raw)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+            payload = {"origin": None, "destination": None}
+
+        route_cache[callsign] = {"created_at": now, "payload": payload}
+        return payload
 
     def handle_tile(self, parsed):
         match = re.fullmatch(r"/api/tile/(\d+)/(\d+)/(\d+)\.png", parsed.path)
