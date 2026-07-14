@@ -275,7 +275,11 @@ function drawRadar() {
   drawOverlayText(center);
   if (state.mode === "settings") drawSettingsScreen(center, radius);
   drawScreenPopup(center, radius);
-  if (!state.popupOpen) drawScreenNav(center, radius);
+  if (!state.popupOpen) {
+    drawScreenNav(center, radius);
+  } else {
+    state.navHitZones = [];
+  }
 }
 
 function drawSweep(center, radius, intensity) {
@@ -485,6 +489,18 @@ function drawSettingsScreen(center, radius) {
   ctx.font = "700 18px ui-sans-serif, system-ui";
   ctx.textAlign = "left";
   ctx.fillText("RÉGLAGES", x + 22, y + 34);
+  const backBounds = { type: "back", x: x + width - 82, y: y + 14, width: 60, height: 34 };
+  state.settingsHitZones.push(backBounds);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+  ctx.strokeStyle = "rgba(82, 224, 121, 0.38)";
+  roundRect(backBounds.x, backBounds.y, backBounds.width, backBounds.height, 12);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#8dff6f";
+  ctx.font = "700 12px ui-sans-serif, system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText("RETOUR", backBounds.x + backBounds.width / 2, backBounds.y + 22);
+  ctx.textAlign = "left";
 
   drawSettingRow(x + 22, y + 66, "Code postal", state.postalCode);
   drawRangeControl(x + 22, y + 108, width - 44);
@@ -604,6 +620,21 @@ canvas.addEventListener("click", (event) => {
   const x = (event.clientX - rect.left) * scale;
   const y = (event.clientY - rect.top) * scale;
 
+  if (state.popupOpen) {
+    if (pointInBounds(x, y, state.popupCloseBounds)) {
+      state.popupOpen = false;
+      return;
+    }
+    if (pointInBounds(x, y, state.popupFavoriteBounds)) {
+      toggleSelectedFavorite();
+      return;
+    }
+    if (!pointInBounds(x, y, state.popupBounds)) {
+      state.popupOpen = false;
+    }
+    return;
+  }
+
   const navZone = state.navHitZones.find((item) => pointInBounds(x, y, item));
   if (navZone) {
     state.mode = navZone.value;
@@ -616,6 +647,10 @@ canvas.addEventListener("click", (event) => {
 
   if (state.mode === "settings") {
     const zone = state.settingsHitZones.find((item) => pointInBounds(x, y, item));
+    if (zone?.type === "back") {
+      state.mode = "radar";
+      return;
+    }
     if (zone?.type === "range") {
       state.rangeKm = zone.value;
       document.getElementById("range-control").value = String(zone.value);
@@ -634,20 +669,6 @@ canvas.addEventListener("click", (event) => {
       return;
     }
     return;
-  }
-
-  if (state.popupOpen) {
-    if (pointInBounds(x, y, state.popupCloseBounds)) {
-      state.popupOpen = false;
-      return;
-    }
-    if (pointInBounds(x, y, state.popupFavoriteBounds)) {
-      toggleSelectedFavorite();
-      return;
-    }
-    if (!pointInBounds(x, y, state.popupBounds)) {
-      state.popupOpen = false;
-    }
   }
 
   let nearest = null;
