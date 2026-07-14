@@ -6,11 +6,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 import json
+import re
 
 
 OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
+OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TRAFFIC_CACHE_SECONDS = 12
+TILE_CACHE_SECONDS = 86400
 traffic_cache = {}
+tile_cache = {}
 
 
 def clamp_float(value, default, low, high):
@@ -61,6 +65,9 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/traffic":
             self.handle_traffic(parsed)
             return
+        if parsed.path.startswith("/api/tile/"):
+            self.handle_tile(parsed)
+            return
         super().do_GET()
 
     def handle_traffic(self, parsed):
@@ -98,6 +105,51 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_tile(self, parsed):
+        match = re.fullmatch(r"/api/tile/(\d+)/(\d+)/(\d+)\.png", parsed.path)
+        if not match:
+            self.send_error(404)
+            return
+
+        z, x, y = (int(value) for value in match.groups())
+        if z < 0 or z > 18:
+            self.send_error(400, "invalid zoom")
+            return
+
+        max_tile = 2 ** z
+        if x < 0 or x >= max_tile or y < 0 or y >= max_tile:
+            self.send_error(400, "invalid tile")
+            return
+
+        key = (z, x, y)
+        now = time()
+        cached = tile_cache.get(key)
+        if cached and now - cached["created_at"] < TILE_CACHE_SECONDS:
+            self.write_tile(cached["body"])
+            return
+
+        url = OSM_TILE_URL.format(z=z, x=x, y=y)
+        request = Request(url, headers={
+            "Accept": "image/png",
+            "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+        })
+
+        try:
+            with urlopen(request, timeout=8) as response:
+                body = response.read()
+                tile_cache[key] = {"created_at": now, "body": body}
+                self.write_tile(body)
+        except (HTTPError, URLError, TimeoutError) as error:
+            self.send_error(502, str(error))
+
+    def write_tile(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "public, max-age=86400")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

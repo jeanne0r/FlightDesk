@@ -2,6 +2,11 @@ const canvas = document.getElementById("radar");
 const ctx = canvas.getContext("2d");
 const mapLayer = document.getElementById("map-layer");
 
+function apiUrl(path) {
+  const port = window.location.port || "4173";
+  return `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
+}
+
 const swissPostalCenters = {
   "1000": { label: "Lausanne", lat: 46.5197, lon: 6.6323 },
   "1010": { label: "Lausanne", lat: 46.5347, lon: 6.6613 },
@@ -187,7 +192,7 @@ async function fetchLiveTraffic(force = false) {
 
   try {
     state.trafficStatus = "Connexion OpenSky…";
-    const response = await fetch(`/api/traffic?${params.toString()}`, { cache: "no-store" });
+    const response = await fetch(apiUrl(`/api/traffic?${params.toString()}`), { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     const aircraft = (payload.states || []).map(normalizeOpenSkyState).filter(Boolean);
@@ -581,8 +586,7 @@ function renderMapTiles() {
       img.alt = "";
       img.decoding = "async";
       img.loading = "lazy";
-      img.referrerPolicy = "no-referrer";
-      img.src = `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${tileY}.png`;
+      img.src = apiUrl(`/api/tile/${zoom}/${wrappedX}/${tileY}.png`);
       img.style.left = `${Math.round(tileX * 256 - topLeft.x)}px`;
       img.style.top = `${Math.round(tileY * 256 - topLeft.y)}px`;
       fragment.appendChild(img);

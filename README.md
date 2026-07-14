@@ -63,6 +63,10 @@ le code postal, les réglages principaux et une réponse Gemini simulée.
 Si OpenSky est indisponible ou limité, la preview repasse automatiquement sur
 des vols de démonstration animés.
 
+La preview locale proxifie OpenSky et les tuiles OpenStreetMap via le serveur
+`simulator/server.py`, afin d'éviter les blocages CORS ou les restrictions du
+navigateur mobile.
+
 ## Structure
 
 ```text
