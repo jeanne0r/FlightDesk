@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 import json
 import re
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 
 OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
@@ -705,7 +705,7 @@ def fetch_osm_tile(z, x, y):
         return body
 
 
-def fetch_photo_thumb(url, width=54, height=38):
+def fetch_photo_thumb(url, width=72, height=52):
     if not url:
         return None
     now = time()
@@ -719,9 +719,22 @@ def fetch_photo_thumb(url, width=54, height=38):
             source = Image.open(BytesIO(response.read())).convert("RGB")
     except (HTTPError, URLError, TimeoutError, OSError):
         return None
-    source.thumbnail((width, height), Image.Resampling.LANCZOS)
+    source_ratio = source.width / max(1, source.height)
+    target_ratio = width / height
+    if source_ratio > target_ratio:
+        crop_width = int(source.height * target_ratio)
+        left = max(0, (source.width - crop_width) // 2)
+        source = source.crop((left, 0, left + crop_width, source.height))
+    else:
+        crop_height = int(source.width / target_ratio)
+        top = max(0, (source.height - crop_height) // 2)
+        source = source.crop((0, top, source.width, top + crop_height))
+    source = source.resize((width, height), Image.Resampling.LANCZOS)
+    source = ImageEnhance.Brightness(source).enhance(1.75)
+    source = ImageEnhance.Contrast(source).enhance(1.55)
+    source = ImageEnhance.Color(source).enhance(1.25)
     thumb = Image.new("RGBA", (width, height), (2, 8, 4, 255))
-    thumb.alpha_composite(source.convert("RGBA"), ((width - source.width) // 2, (height - source.height) // 2))
+    thumb.alpha_composite(source.convert("RGBA"), (0, 0))
     mask = Image.new("L", (width, height), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1), radius=7, fill=255)
     framed = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -863,7 +876,7 @@ def render_radar_png(aircraft, state, source):
 
     selected = next((item for item in aircraft if item["id"] == state["selected_id"]), None)
     if selected:
-        draw_aircraft_popup(image, draw, selected, state, font_tiny, font_small, font_mid, font_title)
+        draw_aircraft_popup(glow, draw, selected, state, font_tiny, font_small, font_mid, font_title)
     else:
         if state["mode"] != "postal":
             draw_menu_button(draw, state["mode"], font_tiny)
@@ -876,7 +889,7 @@ def render_radar_png(aircraft, state, source):
     image = Image.alpha_composite(image, vignette)
 
     buffer = BytesIO()
-    image.convert("RGB").save(buffer, format="PNG", optimize=True)
+    image.convert("RGB").save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
 
 
@@ -978,31 +991,31 @@ def clipped(value, size):
     return value[:size - 1] + "…"
 
 
-def draw_aircraft_popup(image, draw, aircraft, state, font_tiny, font_small, font_mid, font_title):
+def draw_aircraft_popup(overlay, draw, aircraft, state, font_tiny, font_small, font_mid, font_title):
     details = lookup_aircraft_details_for_png(aircraft)
-    panel = (24, 74, 216, 178)
+    panel = (20, 72, 220, 184)
     draw.rounded_rectangle(panel, radius=12, fill=(3, 11, 6, 238), outline=(82, 224, 121, 180), width=2)
 
-    thumb_box = (134, 113, 204, 162)
-    thumb = fetch_photo_thumb(details.get("photo"), 68, 47)
+    thumb_box = (128, 120, 210, 178)
+    thumb = fetch_photo_thumb(details.get("photo"), 80, 56)
     if thumb:
-        image.alpha_composite(thumb, (135, 114))
+        overlay.alpha_composite(thumb, (129, 121))
     else:
         draw.rounded_rectangle(thumb_box, radius=8, fill=(8, 20, 12, 190), outline=(82, 224, 121, 80), width=1)
-        draw.text((169, 134), "PHOTO", fill=(141, 255, 111, 130), font=font_tiny, anchor="mm")
-        draw.text((169, 147), "N/D", fill=(238, 244, 239, 120), font=font_tiny, anchor="mm")
-    draw.rounded_rectangle((133, 112, 205, 163), radius=8, outline=(132, 255, 126, 130), width=1)
+        draw.text((169, 141), "PHOTO", fill=(141, 255, 111, 130), font=font_tiny, anchor="mm")
+        draw.text((169, 154), "N/D", fill=(238, 244, 239, 120), font=font_tiny, anchor="mm")
+    draw.rounded_rectangle((127, 119, 211, 179), radius=9, outline=(132, 255, 126, 155), width=2)
 
-    draw.text((36, 92), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
-    draw.text((36, 117), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
+    draw.text((34, 91), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
+    draw.text((34, 116), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
     subtitle = clipped(aircraft.get("aircraft_type") or details.get("type") or aircraft.get("country") or "Live", 16)
-    draw.text((36, 136), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
+    draw.text((34, 136), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
     route = city_route(details)
     if route:
-        draw.text((36, 152), clipped(route, 18), fill=(238, 244, 239, 168), font=font_tiny, anchor="lm")
+        draw.text((34, 152), clipped(route, 15), fill=(238, 244, 239, 168), font=font_tiny, anchor="lm")
     else:
-        draw.text((36, 152), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
-    draw.text((36, 168), f"{round(aircraft['altitude'] or 0)} m  {round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 165), font=font_tiny, anchor="lm")
+        draw.text((34, 152), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
+    draw.text((34, 170), f"{round(aircraft['altitude'] or 0)} m  {round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 165), font=font_tiny, anchor="lm")
     draw.rounded_rectangle((158, 82, 184, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
     draw.text((171, 94), "★", fill=(141, 255, 111, 230), font=font_small, anchor="mm")
     draw.rounded_rectangle((188, 82, 214, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
