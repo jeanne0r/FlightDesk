@@ -16,6 +16,7 @@ OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
 AIRPLANES_LIVE_POINT_URL = "https://api.airplanes.live/v2/point/{lat:.5f}/{lon:.5f}/{radius_nm:.1f}"
 PLANESPOTTERS_URL = "https://api.planespotters.net/pub/photos/hex/{hex_code}"
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
+NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 USER_AGENT = "FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk/issues)"
 TRAFFIC_CACHE_SECONDS = 30
@@ -32,6 +33,9 @@ esp32_state = {
     "lon": 6.6323,
     "home_lat": 46.5197,
     "home_lon": 6.6323,
+    "postal_code": "1188",
+    "postal_draft": "1188",
+    "place": "Gimel",
     "range_km": 50.0,
     "mode": "radar",
     "selected_id": None,
@@ -96,6 +100,31 @@ def airplanes_live_states(lat, lon, range_km):
             "time": payload.get("now"),
             "aircraft": compact_airplanes_live(payload.get("ac") or [], lat, lon, range_km),
         }
+
+
+def geocode_postal_code(postal_code):
+    params = urlencode({
+        "format": "jsonv2",
+        "country": "Switzerland",
+        "postalcode": postal_code,
+        "limit": "1",
+        "addressdetails": "1",
+    })
+    request = Request(f"{NOMINATIM_SEARCH_URL}?{params}", headers={
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    with urlopen(request, timeout=6) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not payload:
+        return None
+    result = payload[0]
+    address = result.get("address") or {}
+    return {
+        "lat": float(result["lat"]),
+        "lon": float(result["lon"]),
+        "place": address.get("village") or address.get("town") or address.get("city") or result.get("name") or postal_code,
+    }
 
 
 def numeric(value):
@@ -486,6 +515,10 @@ def serializable_esp32_state():
     return {
         "lat": esp32_state["lat"],
         "lon": esp32_state["lon"],
+        "home_lat": esp32_state["home_lat"],
+        "home_lon": esp32_state["home_lon"],
+        "postal_code": esp32_state["postal_code"],
+        "place": esp32_state["place"],
         "range_km": esp32_state["range_km"],
         "mode": esp32_state["mode"],
         "selected_id": esp32_state["selected_id"],
@@ -511,8 +544,8 @@ def handle_esp32_tap(x, y):
         menu_targets = [
             ("radar", 72, 60, 168, 92),
             ("settings", 28, 105, 112, 139),
-            ("recenter", 128, 105, 212, 139),
-            ("favorites", 28, 150, 112, 184),
+            ("map", 128, 105, 212, 139),
+            ("recenter", 28, 150, 112, 184),
             ("assistant", 128, 150, 212, 184),
         ]
         for mode, x1, y1, x2, y2 in menu_targets:
@@ -526,9 +559,36 @@ def handle_esp32_tap(x, y):
                 esp32_state["selected_id"] = None
                 return
 
+    if esp32_state["mode"] == "map":
+        if 86 <= x <= 154 and 80 <= y <= 112:
+            pan_esp32_map(0, -1)
+            return
+        if 86 <= x <= 154 and 156 <= y <= 188:
+            pan_esp32_map(0, 1)
+            return
+        if 26 <= x <= 94 and 118 <= y <= 150:
+            pan_esp32_map(-1, 0)
+            return
+        if 146 <= x <= 214 and 118 <= y <= 150:
+            pan_esp32_map(1, 0)
+            return
+        if 86 <= x <= 154 and 118 <= y <= 150:
+            esp32_state["lat"] = esp32_state["home_lat"]
+            esp32_state["lon"] = esp32_state["home_lon"]
+            esp32_state["selected_id"] = None
+            return
+        if 88 <= x <= 152 and 194 <= y <= 226:
+            esp32_state["mode"] = "menu"
+            return
+
     if esp32_state["mode"] == "settings":
         if 178 <= x <= 212 and 50 <= y <= 86:
             esp32_state["mode"] = "radar"
+            esp32_state["selected_id"] = None
+            return
+        if 37 <= x <= 124 and 147 <= y <= 176:
+            esp32_state["postal_draft"] = esp32_state["postal_code"]
+            esp32_state["mode"] = "postal"
             esp32_state["selected_id"] = None
             return
         ranges = [(20, 48, 121), (50, 88, 121), (100, 128, 121), (250, 168, 121)]
@@ -536,6 +596,13 @@ def handle_esp32_tap(x, y):
             if abs(x - cx) <= 22 and abs(y - cy) <= 20:
                 esp32_state["range_km"] = float(value)
                 return
+
+    if esp32_state["mode"] == "postal":
+        if 178 <= x <= 212 and 50 <= y <= 86:
+            esp32_state["mode"] = "settings"
+            return
+        handle_postal_keypad_tap(x, y)
+        return
 
     selected = nearest_aircraft_at(x, y)
     if selected:
@@ -560,6 +627,53 @@ def cycle_esp32_range(direction):
     current = min(range(len(ranges)), key=lambda idx: abs(ranges[idx] - esp32_state["range_km"]))
     esp32_state["range_km"] = ranges[max(0, min(len(ranges) - 1, current + direction))]
     esp32_state["selected_id"] = None
+
+
+def pan_esp32_map(dx, dy):
+    lat_step = esp32_state["range_km"] * 0.35 / 111.0
+    lon_step = esp32_state["range_km"] * 0.35 / max(10.0, 111.0 * cos(radians(esp32_state["lat"])))
+    esp32_state["lat"] = max(-85.0, min(85.0, esp32_state["lat"] + dy * lat_step))
+    esp32_state["lon"] = max(-180.0, min(180.0, esp32_state["lon"] + dx * lon_step))
+    esp32_state["selected_id"] = None
+
+
+def handle_postal_keypad_tap(x, y):
+    keys = [
+        ("1", 58, 92), ("2", 100, 92), ("3", 142, 92),
+        ("4", 58, 120), ("5", 100, 120), ("6", 142, 120),
+        ("7", 58, 148), ("8", 100, 148), ("9", 142, 148),
+        ("CLR", 58, 176), ("0", 100, 176), ("OK", 158, 176),
+    ]
+    for key, cx, cy in keys:
+        width = 36 if key not in {"CLR", "OK"} else 50
+        if abs(x - cx) <= width / 2 and abs(y - cy) <= 14:
+            if key == "CLR":
+                esp32_state["postal_draft"] = ""
+            elif key == "OK":
+                apply_postal_draft()
+            elif len(esp32_state["postal_draft"]) < 6:
+                esp32_state["postal_draft"] += key
+            return
+
+
+def apply_postal_draft():
+    postal_code = re.sub(r"[^0-9]", "", esp32_state["postal_draft"])
+    if len(postal_code) < 4:
+        return
+    try:
+        location = geocode_postal_code(postal_code)
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        location = None
+    if location:
+        esp32_state["postal_code"] = postal_code
+        esp32_state["postal_draft"] = postal_code
+        esp32_state["lat"] = location["lat"]
+        esp32_state["lon"] = location["lon"]
+        esp32_state["home_lat"] = location["lat"]
+        esp32_state["home_lon"] = location["lon"]
+        esp32_state["place"] = location["place"]
+        esp32_state["selected_id"] = None
+        esp32_state["mode"] = "radar"
 
 
 def lat_lon_to_world(lat, lon, zoom):
@@ -740,6 +854,10 @@ def render_radar_png(aircraft, state, source):
         draw_settings(draw, state, font_small, font_mid)
     elif state["mode"] == "menu":
         draw_menu_panel(draw, state, font_small, font_mid)
+    elif state["mode"] == "map":
+        draw_map_panel(draw, state, font_small, font_mid)
+    elif state["mode"] == "postal":
+        draw_postal_panel(draw, state, font_tiny, font_small, font_mid)
     elif state["mode"] != "radar":
         draw_mode_panel(draw, state["mode"], font_small, font_mid)
 
@@ -747,7 +865,8 @@ def render_radar_png(aircraft, state, source):
     if selected:
         draw_aircraft_popup(image, draw, selected, state, font_tiny, font_small, font_mid, font_title)
     else:
-        draw_menu_button(draw, state["mode"], font_tiny)
+        if state["mode"] != "postal":
+            draw_menu_button(draw, state["mode"], font_tiny)
 
     vignette = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     vdraw = ImageDraw.Draw(vignette)
@@ -774,8 +893,8 @@ def draw_menu_panel(draw, state, font_small, font_mid):
     items = [
         ("RADAR", 72, 60, 168, 92),
         ("RÉGLAGES", 28, 105, 112, 139),
-        ("CENTRER", 128, 105, 212, 139),
-        ("FAVORIS", 28, 150, 112, 184),
+        ("CARTE", 128, 105, 212, 139),
+        ("CENTRER", 28, 150, 112, 184),
         ("IA", 128, 150, 212, 184),
     ]
     for label, x1, y1, x2, y2 in items:
@@ -809,8 +928,47 @@ def draw_settings(draw, state, font_small, font_mid):
         draw.rounded_rectangle((x, 114, x + 35, 137), radius=8, fill=(82, 224, 121, 55 if active else 18), outline=(141, 255, 111, 180 if active else 80), width=1)
         draw.text((x + 17, 126), str(value), fill=(141, 255, 111, 240) if active else (238, 244, 239, 170), font=font_small, anchor="mm")
         x += 42
-    draw.text((42, 158), "Source", fill=(238, 244, 239, 150), font=font_small, anchor="lm")
-    draw.text((94, 158), "Airplanes + secours", fill=(141, 255, 111, 225), font=font_small, anchor="lm")
+    draw.rounded_rectangle((37, 147, 124, 176), radius=10, fill=(82, 224, 121, 28), outline=(141, 255, 111, 110), width=1)
+    draw.text((52, 161), "NPA", fill=(238, 244, 239, 170), font=font_small, anchor="lm")
+    draw.text((116, 161), state["postal_code"], fill=(141, 255, 111, 235), font=font_small, anchor="rm")
+    draw.text((136, 158), clipped(state["place"], 11), fill=(141, 255, 111, 190), font=font_small, anchor="lm")
+
+
+def draw_map_panel(draw, state, font_small, font_mid):
+    draw.rounded_rectangle((20, 47, 220, 189), radius=18, fill=(2, 9, 5, 224), outline=(82, 224, 121, 140), width=2)
+    draw.text((120, 63), "CARTE", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
+    draw.text((120, 78), clipped(state["place"], 18), fill=(238, 244, 239, 160), font=font_small, anchor="mm")
+    controls = [
+        ("↑", 86, 80, 154, 112),
+        ("←", 26, 118, 94, 150),
+        ("⌂", 86, 118, 154, 150),
+        ("→", 146, 118, 214, 150),
+        ("↓", 86, 156, 154, 188),
+    ]
+    for label, x1, y1, x2, y2 in controls:
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=13, fill=(82, 224, 121, 24), outline=(141, 255, 111, 105), width=1)
+        draw.text(((x1 + x2) / 2, (y1 + y2) / 2), label, fill=(141, 255, 111, 230), font=font_mid, anchor="mm")
+    draw_menu_button(draw, "map", font_small)
+
+
+def draw_postal_panel(draw, state, font_tiny, font_small, font_mid):
+    draw.rounded_rectangle((20, 43, 220, 214), radius=18, fill=(2, 9, 5, 236), outline=(82, 224, 121, 150), width=2)
+    draw.text((48, 64), "NPA", fill=(141, 255, 111, 240), font=font_mid, anchor="lm")
+    draw.rounded_rectangle((184, 50, 208, 74), radius=12, fill=(82, 224, 121, 28), outline=(141, 255, 111, 128), width=1)
+    draw.text((196, 61), "×", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
+    draw.rounded_rectangle((76, 52, 164, 76), radius=10, fill=(0, 0, 0, 145), outline=(141, 255, 111, 95), width=1)
+    draw.text((120, 64), state["postal_draft"] or "----", fill=(238, 244, 239, 230), font=font_mid, anchor="mm")
+    keys = [
+        ("1", 58, 92), ("2", 100, 92), ("3", 142, 92),
+        ("4", 58, 120), ("5", 100, 120), ("6", 142, 120),
+        ("7", 58, 148), ("8", 100, 148), ("9", 142, 148),
+        ("CLR", 58, 176), ("0", 100, 176), ("OK", 158, 176),
+    ]
+    for label, cx, cy in keys:
+        width = 36 if label not in {"CLR", "OK"} else 50
+        x1, x2 = cx - width / 2, cx + width / 2
+        draw.rounded_rectangle((x1, cy - 14, x2, cy + 14), radius=9, fill=(82, 224, 121, 26), outline=(141, 255, 111, 105), width=1)
+        draw.text((cx, cy), label, fill=(141, 255, 111, 230), font=font_tiny if label == "CLR" else font_small, anchor="mm")
 
 
 def clipped(value, size):
