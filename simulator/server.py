@@ -23,6 +23,9 @@ TRAFFIC_CACHE_SECONDS = 30
 AIRCRAFT_CACHE_SECONDS = 86400
 ROUTE_CACHE_SECONDS = 21600
 TILE_CACHE_SECONDS = 86400
+SCREEN_SIZE = 240
+RADAR_CENTER = SCREEN_SIZE // 2
+RADAR_RADIUS = 110
 traffic_cache = {}
 aircraft_cache = {}
 route_cache = {}
@@ -779,12 +782,9 @@ def render_map_layer(lat, lon, range_km, size, radius):
 
 
 def polar_to_screen(bearing, distance, range_km):
-    size = 240
-    center = size // 2
-    radius = 96
     angle = radians(bearing - 90)
-    r = radius * distance / range_km
-    return center + cos(angle) * r, center + sin(angle) * r
+    r = RADAR_RADIUS * distance / range_km
+    return RADAR_CENTER + cos(angle) * r, RADAR_CENTER + sin(angle) * r
 
 
 def text(draw, xy, value, font, fill, anchor=None):
@@ -792,9 +792,9 @@ def text(draw, xy, value, font, fill, anchor=None):
 
 
 def render_radar_png(aircraft, state, source):
-    size = 240
-    center = size // 2
-    radius = 96
+    size = SCREEN_SIZE
+    center = RADAR_CENTER
+    radius = RADAR_RADIUS
     range_km = state["range_km"]
     green = (102, 255, 110)
 
@@ -805,14 +805,14 @@ def render_radar_png(aircraft, state, source):
     try:
         map_layer = render_map_layer(state["lat"], state["lon"], range_km, size, radius)
         mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).ellipse((4, 4, 236, 236), fill=185)
+        ImageDraw.Draw(mask).ellipse((0, 0, 240, 240), fill=205)
         image.alpha_composite(Image.composite(map_layer.convert("RGBA"), Image.new("RGBA", (size, size)), mask))
     except Exception:
         pass
 
-    draw.ellipse((3, 3, 237, 237), outline=(57, 74, 58, 220), width=5)
-    draw.ellipse((12, 12, 228, 228), fill=(0, 0, 0, 46), outline=(12, 30, 18, 240), width=4)
-    draw.ellipse((24, 24, 216, 216), fill=(5, 18, 7, 46), outline=(44, 129, 57, 92), width=1)
+    draw.ellipse((0, 0, 240, 240), outline=(57, 74, 58, 180), width=2)
+    draw.ellipse((5, 5, 235, 235), fill=(0, 0, 0, 28), outline=(12, 30, 18, 205), width=2)
+    draw.ellipse((10, 10, 230, 230), fill=(5, 18, 7, 32), outline=(44, 129, 57, 92), width=1)
     for index in range(1, 5):
         r = radius * index / 4
         draw.ellipse((center - r, center - r, center + r, center + r), outline=(62, 210, 82, 52), width=1)
@@ -836,9 +836,9 @@ def render_radar_png(aircraft, state, source):
     draw.text((center, 43), labels.get(source, source), fill=(130, 235, 119, 190), font=font_tiny, anchor="mm")
     draw.text((center, 67), str(len(aircraft)), fill=green, font=font_big, anchor="mm")
     draw.text((center, 88), "AVIONS", fill=green, font=font_mid, anchor="mm")
-    draw.text((176, 121), str(int(range_km * 0.4)), fill=(120, 210, 110, 165), font=font_small, anchor="lm")
-    draw.text((207, 121), str(int(range_km)), fill=(120, 210, 110, 165), font=font_small, anchor="lm")
-    draw.text((207, 135), "KM", fill=(120, 210, 110, 165), font=font_small, anchor="lm")
+    draw.text((184, 121), str(int(range_km * 0.4)), fill=(120, 210, 110, 165), font=font_small, anchor="lm")
+    draw.text((214, 121), str(int(range_km)), fill=(120, 210, 110, 165), font=font_small, anchor="lm")
+    draw.text((214, 135), "KM", fill=(120, 210, 110, 165), font=font_small, anchor="lm")
 
     visible = aircraft
     for item in visible:
@@ -883,8 +883,8 @@ def render_radar_png(aircraft, state, source):
 
     vignette = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     vdraw = ImageDraw.Draw(vignette)
-    vdraw.ellipse((0, 0, size, size), outline=(0, 0, 0, 255), width=18)
-    vdraw.rectangle((0, 0, size, 18), fill=(0, 0, 0, 150))
+    vdraw.ellipse((-1, -1, size + 1, size + 1), outline=(0, 0, 0, 255), width=6)
+    vdraw.rectangle((0, 0, size, 8), fill=(0, 0, 0, 80))
     image = Image.alpha_composite(image.convert("RGBA"), glow)
     image = Image.alpha_composite(image, vignette)
 
