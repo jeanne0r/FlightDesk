@@ -495,42 +495,45 @@ def serializable_esp32_state():
 
 def handle_esp32_tap(x, y):
     if esp32_state["selected_id"]:
-        if 160 <= x <= 190 and 80 <= y <= 116:
+        if 156 <= x <= 188 and 74 <= y <= 108:
             esp32_state["favorites"].add(esp32_state["selected_id"])
             return
-        if 188 <= x <= 216 and 80 <= y <= 116:
+        if 190 <= x <= 224 and 74 <= y <= 108:
             esp32_state["selected_id"] = None
             return
 
-    nav = [
-        ("radar", 19, 194, 60, 225),
-        ("search", 63, 194, 104, 225),
-        ("favorites", 107, 194, 148, 225),
-        ("settings", 151, 194, 192, 225),
-        ("assistant", 195, 194, 236, 225),
-    ]
-    for mode, x1, y1, x2, y2 in nav:
-        if x1 <= x <= x2 and y1 <= y <= y2:
-            esp32_state["mode"] = mode
-            esp32_state["selected_id"] = None
-            return
-
-    if 12 <= x <= 42 and 28 <= y <= 58:
-        esp32_state["lat"] = esp32_state["home_lat"]
-        esp32_state["lon"] = esp32_state["home_lon"]
+    if 88 <= x <= 152 and 194 <= y <= 226:
+        esp32_state["mode"] = "menu" if esp32_state["mode"] != "menu" else "radar"
         esp32_state["selected_id"] = None
         return
-    if 197 <= x <= 227 and 28 <= y <= 58:
-        cycle_esp32_range(-1)
-        return
-    if 197 <= x <= 227 and 62 <= y <= 92:
-        cycle_esp32_range(1)
-        return
+
+    if esp32_state["mode"] == "menu":
+        menu_targets = [
+            ("radar", 72, 60, 168, 92),
+            ("settings", 28, 105, 112, 139),
+            ("recenter", 128, 105, 212, 139),
+            ("favorites", 28, 150, 112, 184),
+            ("assistant", 128, 150, 212, 184),
+        ]
+        for mode, x1, y1, x2, y2 in menu_targets:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                if mode == "recenter":
+                    esp32_state["lat"] = esp32_state["home_lat"]
+                    esp32_state["lon"] = esp32_state["home_lon"]
+                    esp32_state["mode"] = "radar"
+                else:
+                    esp32_state["mode"] = mode
+                esp32_state["selected_id"] = None
+                return
 
     if esp32_state["mode"] == "settings":
-        ranges = [(20, 48, 122), (50, 86, 122), (100, 124, 122), (250, 166, 122)]
+        if 178 <= x <= 212 and 50 <= y <= 86:
+            esp32_state["mode"] = "radar"
+            esp32_state["selected_id"] = None
+            return
+        ranges = [(20, 48, 121), (50, 88, 121), (100, 128, 121), (250, 168, 121)]
         for value, cx, cy in ranges:
-            if abs(x - cx) <= 20 and abs(y - cy) <= 18:
+            if abs(x - cx) <= 22 and abs(y - cy) <= 20:
                 esp32_state["range_km"] = float(value)
                 return
 
@@ -592,7 +595,8 @@ def fetch_photo_thumb(url, width=54, height=38):
     if not url:
         return None
     now = time()
-    cached = photo_cache.get(url)
+    key = (url, width, height)
+    cached = photo_cache.get(key)
     if cached and now - cached["created_at"] < AIRCRAFT_CACHE_SECONDS:
         return cached["image"]
     try:
@@ -609,7 +613,7 @@ def fetch_photo_thumb(url, width=54, height=38):
     framed = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     framed.alpha_composite(thumb)
     framed.putalpha(mask)
-    photo_cache[url] = {"created_at": now, "image": framed}
+    photo_cache[key] = {"created_at": now, "image": framed}
     return framed
 
 
@@ -640,11 +644,11 @@ def render_map_layer(lat, lon, range_km, size, radius):
 
     gray = layer.convert("L")
     green = Image.merge("RGB", (
-        gray.point(lambda value: int(value * 0.05)),
-        gray.point(lambda value: int(22 + value * 0.42)),
-        gray.point(lambda value: int(value * 0.06)),
+        gray.point(lambda value: int(value * 0.04)),
+        gray.point(lambda value: int(34 + value * 0.55)),
+        gray.point(lambda value: int(4 + value * 0.08)),
     ))
-    return green.filter(ImageFilter.GaussianBlur(0.35))
+    return green.filter(ImageFilter.GaussianBlur(0.25))
 
 
 def polar_to_screen(bearing, distance, range_km):
@@ -674,14 +678,14 @@ def render_radar_png(aircraft, state, source):
     try:
         map_layer = render_map_layer(state["lat"], state["lon"], range_km, size, radius)
         mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).ellipse((4, 4, 236, 236), fill=112)
+        ImageDraw.Draw(mask).ellipse((4, 4, 236, 236), fill=185)
         image.alpha_composite(Image.composite(map_layer.convert("RGBA"), Image.new("RGBA", (size, size)), mask))
     except Exception:
         pass
 
     draw.ellipse((3, 3, 237, 237), outline=(57, 74, 58, 220), width=5)
-    draw.ellipse((12, 12, 228, 228), fill=(0, 0, 0, 72), outline=(12, 30, 18, 240), width=4)
-    draw.ellipse((24, 24, 216, 216), fill=(5, 18, 7, 88), outline=(44, 129, 57, 92), width=1)
+    draw.ellipse((12, 12, 228, 228), fill=(0, 0, 0, 46), outline=(12, 30, 18, 240), width=4)
+    draw.ellipse((24, 24, 216, 216), fill=(5, 18, 7, 46), outline=(44, 129, 57, 92), width=1)
     for index in range(1, 5):
         r = radius * index / 4
         draw.ellipse((center - r, center - r, center + r, center + r), outline=(62, 210, 82, 52), width=1)
@@ -709,13 +713,6 @@ def render_radar_png(aircraft, state, source):
     draw.text((207, 121), str(int(range_km)), fill=(120, 210, 110, 165), font=font_small, anchor="lm")
     draw.text((207, 135), "KM", fill=(120, 210, 110, 165), font=font_small, anchor="lm")
 
-    draw.rounded_rectangle((14, 30, 39, 55), radius=8, fill=(1, 7, 3, 156), outline=(120, 255, 120, 150), width=1)
-    draw.text((26, 43), "⌂", fill=(141, 255, 111, 220), font=font_small, anchor="mm")
-    draw.rounded_rectangle((201, 31, 226, 56), radius=8, fill=(1, 7, 3, 156), outline=(120, 255, 120, 120), width=1)
-    draw.text((213, 43), "+", fill=(141, 255, 111, 225), font=font_mid, anchor="mm")
-    draw.rounded_rectangle((201, 64, 226, 89), radius=8, fill=(1, 7, 3, 156), outline=(120, 255, 120, 120), width=1)
-    draw.text((213, 76), "-", fill=(141, 255, 111, 225), font=font_mid, anchor="mm")
-
     visible = aircraft
     for item in visible:
         x, y = polar_to_screen(item["bearing"], item["distance"], range_km)
@@ -741,6 +738,8 @@ def render_radar_png(aircraft, state, source):
 
     if state["mode"] == "settings":
         draw_settings(draw, state, font_small, font_mid)
+    elif state["mode"] == "menu":
+        draw_menu_panel(draw, state, font_small, font_mid)
     elif state["mode"] != "radar":
         draw_mode_panel(draw, state["mode"], font_small, font_mid)
 
@@ -748,7 +747,7 @@ def render_radar_png(aircraft, state, source):
     if selected:
         draw_aircraft_popup(image, draw, selected, state, font_tiny, font_small, font_mid, font_title)
     else:
-        draw_nav(draw, state["mode"], font_tiny)
+        draw_menu_button(draw, state["mode"], font_tiny)
 
     vignette = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     vdraw = ImageDraw.Draw(vignette)
@@ -762,14 +761,27 @@ def render_radar_png(aircraft, state, source):
     return buffer.getvalue()
 
 
-def draw_nav(draw, active_mode, font):
-    modes = [("radar", "RADAR"), ("search", "RECH"), ("favorites", "FAV"), ("settings", "RÉGL"), ("assistant", "IA")]
-    x = 20
-    for mode, label in modes:
-        active = active_mode == mode
-        draw.rounded_rectangle((x, 196, x + 36, 220), radius=10, fill=(6, 13, 8, 205), outline=(120, 255, 120, 210 if active else 70), width=2 if active else 1)
-        draw.text((x + 18, 209), label, fill=(141, 255, 111, 240) if active else (225, 235, 228, 180), font=font, anchor="mm")
-        x += 44
+def draw_menu_button(draw, active_mode, font):
+    active = active_mode == "menu"
+    draw.rounded_rectangle((88, 195, 152, 222), radius=12, fill=(4, 12, 7, 218), outline=(120, 255, 120, 230 if active else 110), width=2 if active else 1)
+    draw.text((120, 208), "MENU", fill=(141, 255, 111, 245), font=font, anchor="mm")
+
+
+def draw_menu_panel(draw, state, font_small, font_mid):
+    panel = (24, 52, 216, 188)
+    draw.rounded_rectangle(panel, radius=18, fill=(2, 9, 5, 226), outline=(82, 224, 121, 150), width=2)
+    draw.text((120, 75), "MENU", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
+    items = [
+        ("RADAR", 72, 60, 168, 92),
+        ("RÉGLAGES", 28, 105, 112, 139),
+        ("CENTRER", 128, 105, 212, 139),
+        ("FAVORIS", 28, 150, 112, 184),
+        ("IA", 128, 150, 212, 184),
+    ]
+    for label, x1, y1, x2, y2 in items:
+        active = label == "RADAR" and state["mode"] == "radar"
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=12, fill=(82, 224, 121, 36 if active else 20), outline=(141, 255, 111, 170 if active else 95), width=1)
+        draw.text(((x1 + x2) / 2, (y1 + y2) / 2), label, fill=(141, 255, 111, 240) if active else (235, 242, 236, 190), font=font_small, anchor="mm")
 
 
 def draw_mode_panel(draw, mode, font_small, font_mid):
@@ -782,12 +794,14 @@ def draw_mode_panel(draw, mode, font_small, font_mid):
     draw.rounded_rectangle((42, 101, 198, 148), radius=12, fill=(2, 9, 5, 218), outline=(82, 224, 121, 105), width=1)
     draw.text((120, 119), title, fill=(141, 255, 111, 235), font=font_mid, anchor="mm")
     draw.text((120, 137), subtitle, fill=(238, 244, 239, 180), font=font_small, anchor="mm")
-    draw_nav(draw, mode, font_small)
+    draw_menu_button(draw, mode, font_small)
 
 
 def draw_settings(draw, state, font_small, font_mid):
     draw.rounded_rectangle((24, 55, 216, 185), radius=16, fill=(3, 10, 6, 232), outline=(82, 224, 121, 130), width=2)
     draw.text((42, 78), "RÉGLAGES", fill=(141, 255, 111, 240), font=font_mid, anchor="lm")
+    draw.rounded_rectangle((184, 58, 208, 82), radius=12, fill=(82, 224, 121, 28), outline=(141, 255, 111, 128), width=1)
+    draw.text((196, 69), "×", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
     draw.text((42, 101), "Rayon", fill=(238, 244, 239, 160), font=font_small, anchor="lm")
     x = 34
     for value in (20, 50, 100, 250):
@@ -797,7 +811,6 @@ def draw_settings(draw, state, font_small, font_mid):
         x += 42
     draw.text((42, 158), "Source", fill=(238, 244, 239, 150), font=font_small, anchor="lm")
     draw.text((94, 158), "Airplanes + secours", fill=(141, 255, 111, 225), font=font_small, anchor="lm")
-    draw_nav(draw, "settings", font_small)
 
 
 def clipped(value, size):
@@ -809,29 +822,33 @@ def clipped(value, size):
 
 def draw_aircraft_popup(image, draw, aircraft, state, font_tiny, font_small, font_mid, font_title):
     details = lookup_aircraft_details_for_png(aircraft)
-    panel = (29, 82, 211, 171)
-    draw.rounded_rectangle(panel, radius=11, fill=(3, 11, 6, 236), outline=(82, 224, 121, 175), width=2)
+    panel = (24, 74, 216, 178)
+    draw.rounded_rectangle(panel, radius=12, fill=(3, 11, 6, 238), outline=(82, 224, 121, 180), width=2)
 
-    thumb = fetch_photo_thumb(details.get("photo"))
+    thumb_box = (134, 113, 204, 162)
+    thumb = fetch_photo_thumb(details.get("photo"), 68, 47)
     if thumb:
-        image.alpha_composite(thumb, (148, 116))
-        draw.rounded_rectangle((147, 115, 203, 155), radius=7, outline=(132, 255, 126, 130), width=1)
+        image.alpha_composite(thumb, (135, 114))
+    else:
+        draw.rounded_rectangle(thumb_box, radius=8, fill=(8, 20, 12, 190), outline=(82, 224, 121, 80), width=1)
+        draw.text((169, 134), "PHOTO", fill=(141, 255, 111, 130), font=font_tiny, anchor="mm")
+        draw.text((169, 147), "N/D", fill=(238, 244, 239, 120), font=font_tiny, anchor="mm")
+    draw.rounded_rectangle((133, 112, 205, 163), radius=8, outline=(132, 255, 126, 130), width=1)
 
-    draw.text((40, 100), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
-    draw.text((40, 124), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
-    subtitle = clipped(aircraft.get("aircraft_type") or details.get("type") or aircraft.get("country") or "Live", 15)
-    draw.text((40, 142), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
+    draw.text((36, 92), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
+    draw.text((36, 117), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
+    subtitle = clipped(aircraft.get("aircraft_type") or details.get("type") or aircraft.get("country") or "Live", 16)
+    draw.text((36, 136), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
     route = city_route(details)
     if route:
-        draw.text((40, 158), clipped(route, 18), fill=(238, 244, 239, 168), font=font_tiny, anchor="lm")
+        draw.text((36, 152), clipped(route, 18), fill=(238, 244, 239, 168), font=font_tiny, anchor="lm")
     else:
-        draw.text((40, 158), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
-    draw.text((144, 94), f"{round(aircraft['distance'])} km", fill=(238, 244, 239, 205), font=font_tiny, anchor="lm")
-    draw.text((144, 106), f"{round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 185), font=font_tiny, anchor="lm")
-    draw.rounded_rectangle((167, 88, 188, 109), radius=10, fill=(82, 224, 121, 28), outline=(141, 255, 111, 128), width=1)
-    draw.text((177, 98), "★", fill=(141, 255, 111, 230), font=font_tiny, anchor="mm")
-    draw.rounded_rectangle((190, 88, 211, 109), radius=10, fill=(82, 224, 121, 28), outline=(141, 255, 111, 128), width=1)
-    draw.text((200, 98), "×", fill=(141, 255, 111, 240), font=font_small, anchor="mm")
+        draw.text((36, 152), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
+    draw.text((36, 168), f"{round(aircraft['altitude'] or 0)} m  {round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 165), font=font_tiny, anchor="lm")
+    draw.rounded_rectangle((158, 82, 184, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
+    draw.text((171, 94), "★", fill=(141, 255, 111, 230), font=font_small, anchor="mm")
+    draw.rounded_rectangle((188, 82, 214, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
+    draw.text((201, 94), "×", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
 
 
 def lookup_aircraft_details_for_png(aircraft):
