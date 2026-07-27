@@ -16,6 +16,7 @@ OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
 PLANESPOTTERS_URL = "https://api.planespotters.net/pub/photos/hex/{hex_code}"
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+USER_AGENT = "FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk/issues)"
 TRAFFIC_CACHE_SECONDS = 12
 AIRCRAFT_CACHE_SECONDS = 86400
 ROUTE_CACHE_SECONDS = 21600
@@ -24,6 +25,7 @@ traffic_cache = {}
 aircraft_cache = {}
 route_cache = {}
 tile_cache = {}
+photo_cache = {}
 esp32_state = {
     "lat": 46.5197,
     "lon": 6.6323,
@@ -67,7 +69,7 @@ def opensky_states(lat, lon, range_km):
     url = f"{OPEN_SKY_URL}?{params}"
     request = Request(url, headers={
         "Accept": "application/json",
-        "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+        "User-Agent": USER_AGENT,
     })
     with urlopen(request, timeout=8) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -229,7 +231,7 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
 
         request = Request(PLANESPOTTERS_URL.format(hex_code=hex_code), headers={
             "Accept": "application/json",
-            "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+            "User-Agent": USER_AGENT,
         })
 
         try:
@@ -256,7 +258,7 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
 
         request = Request(ADSBDB_CALLSIGN_URL.format(callsign=callsign), headers={
             "Accept": "application/json",
-            "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+            "User-Agent": USER_AGENT,
         })
 
         try:
@@ -295,7 +297,7 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         url = OSM_TILE_URL.format(z=z, x=x, y=y)
         request = Request(url, headers={
             "Accept": "image/png",
-            "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+            "User-Agent": USER_AGENT,
         })
 
         try:
@@ -423,10 +425,10 @@ def serializable_esp32_state():
 
 def handle_esp32_tap(x, y):
     if esp32_state["selected_id"]:
-        if 179 <= x <= 213 and 77 <= y <= 111:
+        if 160 <= x <= 190 and 80 <= y <= 116:
             esp32_state["favorites"].add(esp32_state["selected_id"])
             return
-        if 207 <= x <= 238 and 77 <= y <= 111:
+        if 188 <= x <= 216 and 80 <= y <= 116:
             esp32_state["selected_id"] = None
             return
 
@@ -508,12 +510,37 @@ def fetch_osm_tile(z, x, y):
     url = OSM_TILE_URL.format(z=z, x=x, y=y)
     request = Request(url, headers={
         "Accept": "image/png",
-        "User-Agent": "FlightDeskSimulator/0.1 (+https://github.com/jeanne0r/FlightDesk)",
+        "User-Agent": USER_AGENT,
     })
     with urlopen(request, timeout=5) as response:
         body = response.read()
         tile_cache[key] = {"created_at": now, "body": body}
         return body
+
+
+def fetch_photo_thumb(url, width=54, height=38):
+    if not url:
+        return None
+    now = time()
+    cached = photo_cache.get(url)
+    if cached and now - cached["created_at"] < AIRCRAFT_CACHE_SECONDS:
+        return cached["image"]
+    try:
+        request = Request(url, headers={"User-Agent": USER_AGENT})
+        with urlopen(request, timeout=3) as response:
+            source = Image.open(BytesIO(response.read())).convert("RGB")
+    except (HTTPError, URLError, TimeoutError, OSError):
+        return None
+    source.thumbnail((width, height), Image.Resampling.LANCZOS)
+    thumb = Image.new("RGBA", (width, height), (2, 8, 4, 255))
+    thumb.alpha_composite(source.convert("RGBA"), ((width - source.width) // 2, (height - source.height) // 2))
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1), radius=7, fill=255)
+    framed = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    framed.alpha_composite(thumb)
+    framed.putalpha(mask)
+    photo_cache[url] = {"created_at": now, "image": framed}
+    return framed
 
 
 def map_zoom_for_range(lat, range_km, radius_px):
@@ -647,7 +674,7 @@ def render_radar_png(aircraft, state, source):
 
     selected = next((item for item in aircraft if item["id"] == state["selected_id"]), None)
     if selected:
-        draw_aircraft_popup(draw, selected, state, font_tiny, font_small, font_mid, font_title)
+        draw_aircraft_popup(image, draw, selected, state, font_tiny, font_small, font_mid, font_title)
     else:
         draw_nav(draw, state["mode"], font_tiny)
 
@@ -708,24 +735,31 @@ def clipped(value, size):
     return value[:size - 1] + "…"
 
 
-def draw_aircraft_popup(draw, aircraft, state, font_tiny, font_small, font_mid, font_title):
+def draw_aircraft_popup(image, draw, aircraft, state, font_tiny, font_small, font_mid, font_title):
     details = lookup_aircraft_details_for_png(aircraft)
-    draw.rounded_rectangle((43, 82, 218, 174), radius=12, fill=(3, 11, 6, 232), outline=(82, 224, 121, 165), width=2)
-    draw.text((55, 101), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
-    draw.text((55, 126), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
-    subtitle = clipped(details.get("type") or aircraft.get("country") or "OpenSky", 20)
-    draw.text((55, 144), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
+    panel = (29, 82, 211, 171)
+    draw.rounded_rectangle(panel, radius=11, fill=(3, 11, 6, 236), outline=(82, 224, 121, 175), width=2)
+
+    thumb = fetch_photo_thumb(details.get("photo"))
+    if thumb:
+        image.alpha_composite(thumb, (148, 116))
+        draw.rounded_rectangle((147, 115, 203, 155), radius=7, outline=(132, 255, 126, 130), width=1)
+
+    draw.text((40, 100), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
+    draw.text((40, 124), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
+    subtitle = clipped(details.get("type") or aircraft.get("country") or "OpenSky", 15)
+    draw.text((40, 142), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
     route = city_route(details)
     if route:
-        draw.text((55, 160), clipped(route, 18), fill=(238, 244, 239, 160), font=font_tiny, anchor="lm")
+        draw.text((40, 158), clipped(route, 18), fill=(238, 244, 239, 168), font=font_tiny, anchor="lm")
     else:
-        draw.text((55, 160), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 180), font=font_tiny, anchor="lm")
-    draw.text((168, 126), f"{round(aircraft['altitude'] or 0)} m", fill=(238, 244, 239, 205), font=font_small, anchor="lm")
-    draw.text((168, 143), f"{round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 180), font=font_small, anchor="lm")
-    draw.rounded_rectangle((181, 88, 205, 112), radius=12, fill=(82, 224, 121, 28), outline=(141, 255, 111, 120), width=1)
-    draw.text((193, 100), "★", fill=(141, 255, 111, 230), font=font_small, anchor="mm")
-    draw.rounded_rectangle((209, 88, 232, 112), radius=12, fill=(82, 224, 121, 28), outline=(141, 255, 111, 120), width=1)
-    draw.text((220, 100), "×", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
+        draw.text((40, 158), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
+    draw.text((144, 94), f"{round(aircraft['distance'])} km", fill=(238, 244, 239, 205), font=font_tiny, anchor="lm")
+    draw.text((144, 106), f"{round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 185), font=font_tiny, anchor="lm")
+    draw.rounded_rectangle((167, 88, 188, 109), radius=10, fill=(82, 224, 121, 28), outline=(141, 255, 111, 128), width=1)
+    draw.text((177, 98), "★", fill=(141, 255, 111, 230), font=font_tiny, anchor="mm")
+    draw.rounded_rectangle((190, 88, 211, 109), radius=10, fill=(82, 224, 121, 28), outline=(141, 255, 111, 128), width=1)
+    draw.text((200, 98), "×", fill=(141, 255, 111, 240), font=font_small, anchor="mm")
 
 
 def lookup_aircraft_details_for_png(aircraft):
@@ -739,7 +773,7 @@ def lookup_aircraft_details_for_png(aircraft):
         return cached["payload"]
     payload = {"origin": None, "destination": None, "type": None, "photo": None}
     try:
-        request = Request(PLANESPOTTERS_URL.format(hex_code=hex_code), headers={"Accept": "application/json", "User-Agent": "FlightDeskSimulator/0.1"})
+        request = Request(PLANESPOTTERS_URL.format(hex_code=hex_code), headers={"Accept": "application/json", "User-Agent": USER_AGENT})
         with urlopen(request, timeout=2) as response:
             raw = json.loads(response.read().decode("utf-8"))
             payload.update(aircraft_details_from_photo((raw.get("photos") or [None])[0]))
