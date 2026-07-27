@@ -13,22 +13,25 @@
 ## v0.2 — Écran et tactile
 - [x] simulateur web de l'interface
 - [x] code postal et carte OpenStreetMap en filigrane
+- [x] preview ESPHome Xiaozhi Ball V2
+- [x] sélection tactile via endpoint serveur
+- [x] fiche avion avec route, type et photo quand disponible
+- [x] menu rond serveur pour réglages/carte/recentrage
 - [ ] LVGL
 - [ ] radar vert 480 × 480
 - [ ] rémanence du balayage
-- [ ] sélection tactile
-- [ ] fiche avion
-- [ ] menu Réglages
 - [ ] volume et muet
 
 ## v0.3 — Réseau et trafic Internet
 - [ ] portail Wi-Fi
 - [ ] position de la maison
-- [ ] fournisseur de données trafic configurable
+- [x] fournisseur de données trafic configurable dans le simulateur
 - [x] avions réels via OpenSky dans le simulateur
+- [x] avions réels via Airplanes.live dans le simulateur
 - [ ] fournisseur trafic configurable dans le firmware
 - [ ] cache et limitation des appels
-- [ ] gestion des erreurs réseau
+- [x] cache et fallback serveur
+- [x] gestion des erreurs réseau côté preview serveur
 
 ## v0.4 — Audio
 - [ ] INMP441

@@ -1,6 +1,9 @@
 .pio/
+.esphome/
+build/
 .vscode/
 .DS_Store
 firmware/include/secrets.h
+firmware/esphome/**/secrets.yaml
 *.zip
 __pycache__/

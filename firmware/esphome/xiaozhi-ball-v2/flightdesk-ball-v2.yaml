@@ -1,0 +1,246 @@
+substitutions:
+  name: flightdesk-ball-v2
+  friendly_name: "FlightDesk Ball V2"
+  flightdesk_base_url: "http://192.168.1.16:4173"
+
+  imagewidth: "240"
+  imageheight: "240"
+  displaymodel: "GC9A01A"
+  invertcolors: "true"
+
+  sda_pin_bus_a: "15"
+  scl_pin_bus_a: "14"
+  sda_pin_bus_b: "11"
+  scl_pin_bus_b: "7"
+  touch_input_pin: "12"
+  touch_reset_pin: "6"
+
+  backlight_output_pin: "42"
+  lcd_cs_pin: "5"
+  lcd_dc_pin: "47"
+  lcd_reset_pin: "38"
+  spi_clk_pin: "4"
+  spi_mosi_pin: "2"
+
+  left_top_button_pin: "0"
+  led_pin: "48"
+  battery_adc_pin: "1"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2025.5.0
+  name_add_mac_suffix: false
+  on_boot:
+    priority: 600
+    then:
+      - component.update: s3_box_lcd
+      - component.update: battery_voltage
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "FlightDesk Ball Setup"
+    password: "change-me-please"
+  on_connect:
+    - component.update: flightdesk_radar
+    - component.update: s3_box_lcd
+  on_disconnect:
+    - component.update: s3_box_lcd
+
+captive_portal:
+
+http_request:
+  verify_ssl: false
+  timeout: 8s
+
+online_image:
+  - url: ${flightdesk_base_url}/api/esp32/radar.png
+    id: flightdesk_radar
+    format: png
+    type: RGB565
+    resize: 240x240
+    update_interval: 30s
+    on_download_finished:
+      - component.update: s3_box_lcd
+    on_error:
+      - component.update: s3_box_lcd
+
+interval:
+  - interval: 100ms
+    then:
+      - component.update: s3_box_lcd
+
+i2c:
+  - id: bus_a
+    sda: GPIO${sda_pin_bus_a}
+    scl: GPIO${scl_pin_bus_a}
+    scan: false
+  - id: bus_b
+    sda: GPIO${sda_pin_bus_b}
+    scl: GPIO${scl_pin_bus_b}
+    scan: false
+
+spi:
+  - id: spi_bus
+    clk_pin: GPIO${spi_clk_pin}
+    mosi_pin: GPIO${spi_mosi_pin}
+
+touchscreen:
+  - platform: cst816
+    i2c_id: bus_b
+    interrupt_pin: ${touch_input_pin}
+    reset_pin: ${touch_reset_pin}
+    id: touch_dp
+    on_touch:
+      then:
+        - http_request.get:
+            url: !lambda |-
+              return std::string("${flightdesk_base_url}/api/esp32/action?action=tap&x=") +
+                std::to_string((int) touch.x) + "&y=" + std::to_string((int) touch.y);
+            on_response:
+              then:
+                - component.update: flightdesk_radar
+            on_error:
+              then:
+                - component.update: flightdesk_radar
+
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    internal: true
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO${left_top_button_pin}
+      mode: INPUT_PULLUP
+      ignore_strapping_warning: true
+      inverted: true
+    id: left_top_button
+    internal: true
+    on_multi_click:
+      - timing:
+          - ON for 50ms to 800ms
+          - OFF for at least 50ms
+        then:
+          - component.update: flightdesk_radar
+      - timing:
+          - ON for at least 10s
+        then:
+          - button.press: factory_reset_btn
+
+sensor:
+  - platform: adc
+    pin: GPIO${battery_adc_pin}
+    id: battery_voltage
+    name: "Battery Voltage"
+    attenuation: 12db
+    accuracy_decimals: 2
+    update_interval: 60s
+    unit_of_measurement: "V"
+    filters:
+      - multiply: 2.0
+
+output:
+  - platform: ledc
+    pin: GPIO${backlight_output_pin}
+    id: backlight_output
+    inverted: true
+
+light:
+  - platform: monochromatic
+    id: screen_backlight
+    name: Screen
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    name: Status LED
+    pin: GPIO${led_pin}
+    chipset: WS2812
+    num_leds: 1
+    rgb_order: grb
+    restore_mode: ALWAYS_OFF
+
+color:
+  - id: radar_green
+    hex: "70ff78"
+  - id: radar_trail_1
+    hex: "104820"
+  - id: radar_trail_2
+    hex: "0a3018"
+
+display:
+  - platform: ili9xxx
+    id: s3_box_lcd
+    model: ${displaymodel}
+    invert_colors: ${invertcolors}
+    data_rate: 40MHz
+    cs_pin: GPIO${lcd_cs_pin}
+    dc_pin: GPIO${lcd_dc_pin}
+    reset_pin:
+      number: GPIO${lcd_reset_pin}
+    update_interval: never
+    dimensions:
+      height: ${imageheight}
+      width: ${imagewidth}
+    pages:
+      - id: radar_page
+        lambda: |-
+          it.fill(Color::BLACK);
+          it.image(0, 0, id(flightdesk_radar));
+
+          const int cx = it.get_width() / 2;
+          const int cy = it.get_height() / 2;
+          const int radius = 110;
+          const float pi = 3.14159265359f;
+          const float head = fmodf(millis() / 18.0f, 360.0f);
+
+          for (int i = 8; i >= 1; --i) {
+            const float angle = (head - i * 4.0f - 90.0f) * pi / 180.0f;
+            const int x = cx + (int)(cosf(angle) * radius);
+            const int y = cy + (int)(sinf(angle) * radius);
+            const uint8_t g = 22 + i * 7;
+            it.line(cx, cy, x, y, Color(4, g, 18));
+          }
+
+          const float angle = (head - 90.0f) * pi / 180.0f;
+          const int x = cx + (int)(cosf(angle) * radius);
+          const int y = cy + (int)(sinf(angle) * radius);
+          it.line(cx, cy, x, y, id(radar_green));
+
+font:
+  - file:
+      type: gfonts
+      family: Figtree
+      weight: 700
+    id: fallback_font
+    size: 16
+    glyphsets:
+      - GF_Latin_Core
