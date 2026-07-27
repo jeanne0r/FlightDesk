@@ -15,6 +15,8 @@ postal code settings and screen state.
 - Smooth local radar sweep at 100 ms refresh.
 - Touch forwarding to `/api/esp32/action`.
 - Server-rendered menu, settings, map/recenter controls and aircraft popup.
+- Server-rendered AI page: tap an aircraft popup for selected-flight info, or
+  use `IA` in the menu for nearby traffic questions.
 - PlaneSpotters aircraft thumbnails when available.
 - OTA through ESPHome.
 
@@ -69,6 +71,7 @@ tested Ball V2 unit.
 - The PNG refresh is intentionally slower than the display refresh. The server
   frame updates every 30 seconds, while the Ball draws the sweep locally every
   100 ms for a smooth radar feel.
+- Gemini runs on the FlightDesk server with `GEMINI_API_KEY`. If no key is set,
+  the server still returns a compact local answer from the live aircraft data.
 - This preview is designed to evolve toward an autonomous Internet product, not
   a Home Assistant dashboard.
-

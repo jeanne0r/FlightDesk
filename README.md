@@ -75,7 +75,7 @@ Puis ouvrir `http://127.0.0.1:4173/live`.
 Le simulateur couvre déjà le radar animé, une vraie carte OpenStreetMap en
 filigrane vert, le trafic live via Airplanes.live avec fallback OpenSky, la
 sélection d'un vol, les favoris, le code postal, les réglages principaux et une
-réponse Gemini simulée.
+réponse IA contextuelle sur le trafic.
 
 Si OpenSky est indisponible ou limité, la preview repasse automatiquement sur
 des vols de démonstration animés.
@@ -83,6 +83,17 @@ des vols de démonstration animés.
 La preview locale proxifie les données trafic, les tuiles OpenStreetMap et les
 images avion via le serveur `simulator/server.py`, afin d'éviter les blocages
 CORS ou les restrictions du navigateur mobile.
+
+Pour activer Gemini côté serveur, définir une clé avant de lancer le simulateur :
+
+```bash
+cp simulator/.env.example simulator/.env
+# renseigner GEMINI_API_KEY dans simulator/.env
+python3 simulator/server.py
+```
+
+Sans clé, FlightDesk garde un mode IA local qui résume les vols visibles sans
+appel externe.
 
 ## Faire connaître le projet
 

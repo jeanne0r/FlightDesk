@@ -41,9 +41,14 @@
 - [ ] test volume logiciel
 
 ## v0.5 — Gemini
+- [x] endpoint IA serveur avec contexte NPA/rayon/avions proches
+- [x] modèle Gemini léger configurable côté serveur
+- [x] fallback local sans clé Gemini
+- [x] action IA depuis popup avion sélectionné
+- [x] action IA générale depuis menu rond
 - [ ] bouton micro tactile
 - [ ] transcription
-- [ ] contexte des avions proches
+- [x] contexte des avions proches
 - [ ] réponses vocales
 - [ ] clé stockée sans publication Git
 

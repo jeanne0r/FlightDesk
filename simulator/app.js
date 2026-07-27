@@ -740,6 +740,10 @@ canvas.addEventListener("click", (event) => {
       toggleSelectedFavorite();
       return;
     }
+    if (pointInBounds(x, y, state.popupBounds)) {
+      askAssistant("Explique le vol sélectionné.", state.selectedId);
+      return;
+    }
     if (!pointInBounds(x, y, state.popupBounds)) {
       state.popupOpen = false;
     }
@@ -951,22 +955,46 @@ elements.favoriteToggle.addEventListener("click", () => {
 });
 
 document.getElementById("ask-button").addEventListener("click", () => {
+  askAssistant(document.getElementById("assistant-input").value, state.selectedId);
+});
+
+async function askAssistant(question, selectedId = null) {
   const visible = state.aircraft.filter((aircraft) => aircraft.visible);
   if (!visible.length) {
     elements.assistantAnswer.textContent = "Aucun avion visible dans le rayon actuel.";
     return;
   }
-  const nearest = [...visible].sort((a, b) => a.distance - b.distance)[0];
-  elements.assistantAnswer.textContent =
-    `Le vol le plus proche est ${nearest.callsign} (${nearest.airline}), ` +
-    `à ${Math.round(nearest.distance)} km, altitude ${Math.round(nearest.altitude)} m, ` +
-    `vitesse ${Math.round(nearest.speed)} km/h.`;
-  state.selectedId = nearest.id;
+  const chosen = selectedId
+    ? visible.find((aircraft) => String(aircraft.id) === String(selectedId))
+    : [...visible].sort((a, b) => a.distance - b.distance)[0];
+  elements.assistantAnswer.textContent = "Gemini analyse le trafic…";
+  state.selectedId = chosen?.id || state.selectedId;
   state.mode = "assistant";
   document.querySelectorAll(".nav-button").forEach((item) => {
     item.classList.toggle("active", item.dataset.mode === "assistant");
   });
-});
+
+  const params = new URLSearchParams({
+    q: question || "Quel est le vol le plus proche ?",
+    lat: String(state.mapCenter?.lat ?? 46.5197),
+    lon: String(state.mapCenter?.lon ?? 6.6323),
+    range: String(state.rangeKm),
+    postal: state.postalCode,
+    place: state.mapCenter?.label || state.homeCenter?.label || ""
+  });
+  if (state.selectedId) params.set("selected", state.selectedId);
+
+  try {
+    const response = await fetch(apiUrl(`/api/ai?${params.toString()}`), { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    elements.assistantAnswer.textContent = payload.source === "gemini"
+      ? payload.answer
+      : `${payload.answer} (réponse locale, clé Gemini absente)`;
+  } catch (error) {
+    elements.assistantAnswer.textContent = `Assistant indisponible: ${error.message}`;
+  }
+}
 
 requestAnimationFrame(animate);
 

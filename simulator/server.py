@@ -7,9 +7,26 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 import json
+import os
 import re
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+
+
+def load_local_env():
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, "r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+load_local_env()
 
 
 OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
@@ -18,11 +35,14 @@ PLANESPOTTERS_URL = "https://api.planespotters.net/pub/photos/hex/{hex_code}"
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 USER_AGENT = "FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk/issues)"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 TRAFFIC_CACHE_SECONDS = 30
 AIRCRAFT_CACHE_SECONDS = 86400
 ROUTE_CACHE_SECONDS = 21600
 TILE_CACHE_SECONDS = 86400
+AI_CACHE_SECONDS = 120
 SCREEN_SIZE = 240
 RADAR_CENTER = SCREEN_SIZE // 2
 RADAR_RADIUS = 110
@@ -31,6 +51,7 @@ aircraft_cache = {}
 route_cache = {}
 tile_cache = {}
 photo_cache = {}
+ai_cache = {}
 esp32_state = {
     "lat": 46.5197,
     "lon": 6.6323,
@@ -44,6 +65,9 @@ esp32_state = {
     "selected_id": None,
     "favorites": set(),
     "last_aircraft": [],
+    "ai_answer": "Touchez un avion, puis la fiche pour demander une analyse.",
+    "ai_question": "Infos du vol sélectionné",
+    "ai_status": "idle",
 }
 
 
@@ -217,6 +241,9 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/aircraft":
             self.handle_aircraft(parsed)
             return
+        if parsed.path == "/api/ai":
+            self.handle_ai(parsed)
+            return
         if parsed.path.startswith("/api/tile/"):
             self.handle_tile(parsed)
             return
@@ -301,6 +328,22 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
             payload = {"error": str(error), "photo": None, "type": None}
             payload.update(self.route_for_callsign(callsign))
             self.write_json(payload)
+
+    def handle_ai(self, parsed):
+        query = parse_qs(parsed.query)
+        question = ((query.get("q") or query.get("question") or [""])[0] or "").strip()
+        selected_id = ((query.get("selected") or query.get("selected_id") or [""])[0] or "").strip()
+        lat = clamp_float((query.get("lat") or [esp32_state["lat"]])[0], esp32_state["lat"], -85.0, 85.0)
+        lon = clamp_float((query.get("lon") or [esp32_state["lon"]])[0], esp32_state["lon"], -180.0, 180.0)
+        range_km = clamp_float((query.get("range") or [esp32_state["range_km"]])[0], esp32_state["range_km"], 20.0, 250.0)
+        postal_code = ((query.get("postal") or [esp32_state["postal_code"]])[0] or "").strip()
+        place = ((query.get("place") or [esp32_state["place"]])[0] or "").strip()
+
+        if not question:
+            question = "Donne les informations utiles sur le vol sélectionné." if selected_id else "Résume le trafic aérien autour du NPA."
+
+        payload = answer_ai_question(question, lat, lon, range_km, postal_code, place, selected_id)
+        self.write_json(payload)
 
     def route_for_callsign(self, callsign):
         if not callsign:
@@ -424,6 +467,10 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
             esp32_state["selected_id"] = None
         elif action == "close":
             esp32_state["selected_id"] = None
+        elif action == "ai_selected":
+            update_esp32_ai_answer(selected_only=True)
+        elif action == "ai_general":
+            update_esp32_ai_answer(selected_only=False)
         self.write_json({"ok": True, "state": serializable_esp32_state()})
 
 
@@ -526,6 +573,9 @@ def serializable_esp32_state():
         "mode": esp32_state["mode"],
         "selected_id": esp32_state["selected_id"],
         "favorites": sorted(esp32_state["favorites"]),
+        "ai_answer": esp32_state["ai_answer"],
+        "ai_question": esp32_state["ai_question"],
+        "ai_status": esp32_state["ai_status"],
     }
 
 
@@ -536,6 +586,9 @@ def handle_esp32_tap(x, y):
             return
         if 190 <= x <= 224 and 74 <= y <= 108:
             esp32_state["selected_id"] = None
+            return
+        if 20 <= x <= 220 and 72 <= y <= 184:
+            update_esp32_ai_answer(selected_only=True)
             return
 
     if 88 <= x <= 152 and 194 <= y <= 226:
@@ -557,6 +610,8 @@ def handle_esp32_tap(x, y):
                     esp32_state["lat"] = esp32_state["home_lat"]
                     esp32_state["lon"] = esp32_state["home_lon"]
                     esp32_state["mode"] = "radar"
+                elif mode == "assistant":
+                    update_esp32_ai_answer(selected_only=False)
                 else:
                     esp32_state["mode"] = mode
                 esp32_state["selected_id"] = None
@@ -677,6 +732,180 @@ def apply_postal_draft():
         esp32_state["place"] = location["place"]
         esp32_state["selected_id"] = None
         esp32_state["mode"] = "radar"
+
+
+def update_esp32_ai_answer(selected_only):
+    selected_id = esp32_state["selected_id"] if selected_only else None
+    question = "Explique le vol sélectionné." if selected_id else "Que faut-il savoir sur le trafic autour du NPA ?"
+    esp32_state["ai_question"] = question
+    esp32_state["ai_status"] = "loading"
+    try:
+        payload = answer_ai_question(
+            question,
+            esp32_state["lat"],
+            esp32_state["lon"],
+            esp32_state["range_km"],
+            esp32_state["postal_code"],
+            esp32_state["place"],
+            selected_id,
+            max_chars=230,
+        )
+        esp32_state["ai_answer"] = payload["answer"]
+        esp32_state["ai_status"] = payload["source"]
+    except Exception as error:
+        esp32_state["ai_answer"] = f"IA indisponible: {error}"
+        esp32_state["ai_status"] = "error"
+    esp32_state["mode"] = "assistant"
+
+
+def answer_ai_question(question, lat, lon, range_km, postal_code, place, selected_id=None, max_chars=520):
+    cache_key = (question, round(lat, 3), round(lon, 3), round(range_km), postal_code, selected_id)
+    cached = ai_cache.get(cache_key)
+    if cached and time() - cached["created_at"] < AI_CACHE_SECONDS:
+        return cached["payload"]
+
+    aircraft = current_aircraft_for_context(lat, lon, range_km)
+    selected = find_aircraft_by_id(aircraft, selected_id) if selected_id else None
+    details = lookup_aircraft_details_for_png(selected) if selected else {}
+    context = build_ai_context(question, aircraft, selected, details, postal_code, place, lat, lon, range_km)
+
+    answer = call_gemini(context, max_chars=max_chars)
+    source = "gemini"
+    if not answer:
+        answer = fallback_ai_answer(question, aircraft, selected, details, postal_code, place, range_km)
+        source = "local"
+
+    payload = {
+        "answer": clipped_chars(answer, max_chars),
+        "source": source,
+        "model": GEMINI_MODEL if source == "gemini" else "local",
+        "selected": selected,
+        "aircraft_count": len(aircraft),
+    }
+    ai_cache[cache_key] = {"created_at": time(), "payload": payload}
+    return payload
+
+
+def current_aircraft_for_context(lat, lon, range_km):
+    try:
+        aircraft = airplanes_live_states(lat, lon, range_km).get("aircraft") or []
+        return aircraft or list(esp32_state["last_aircraft"])
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+        try:
+            payload = opensky_states(lat, lon, range_km)
+            aircraft = compact_aircraft(payload.get("states") or [], lat, lon, range_km)
+            return aircraft or list(esp32_state["last_aircraft"])
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+            return list(esp32_state["last_aircraft"])
+
+
+def find_aircraft_by_id(aircraft, selected_id):
+    if not selected_id:
+        return None
+    selected_id = str(selected_id).lower()
+    return next((item for item in aircraft if str(item.get("id", "")).lower() == selected_id or str(item.get("hex", "")).lower() == selected_id), None)
+
+
+def build_ai_context(question, aircraft, selected, details, postal_code, place, lat, lon, range_km):
+    nearby = aircraft[:12]
+    return {
+        "role": "FlightDesk onboard assistant",
+        "instruction": (
+            "Réponds en français, très court, factuel, sans inventer. "
+            "Si une donnée manque, dis qu'elle est indisponible. "
+            "Pour l'écran rond, privilégie 2 ou 3 phrases compactes."
+        ),
+        "question": question,
+        "location": {
+            "postal_code": postal_code,
+            "place": place,
+            "lat": round(lat, 5),
+            "lon": round(lon, 5),
+            "range_km": range_km,
+        },
+        "selected_aircraft": enrich_aircraft_for_ai(selected, details) if selected else None,
+        "nearby_aircraft": [enrich_aircraft_for_ai(item, {}) for item in nearby],
+    }
+
+
+def enrich_aircraft_for_ai(aircraft, details):
+    if not aircraft:
+        return None
+    origin = details.get("origin") or {}
+    destination = details.get("destination") or {}
+    return {
+        "callsign": aircraft.get("callsign"),
+        "type": aircraft.get("aircraft_type") or details.get("type"),
+        "registration": aircraft.get("registration") or details.get("registration"),
+        "country_or_operator": aircraft.get("country"),
+        "distance_km": round(aircraft.get("distance") or 0),
+        "altitude_m": round(aircraft.get("altitude") or 0),
+        "speed_kmh": round(aircraft.get("speed") or 0),
+        "heading_deg": round(aircraft.get("heading") or 0),
+        "route": city_route(details),
+        "origin_city": origin.get("city"),
+        "destination_city": destination.get("city"),
+    }
+
+
+def call_gemini(context, max_chars):
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return None
+    body = json.dumps({
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": json.dumps(context, ensure_ascii=False)}],
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": min(220, max(80, int(max_chars / 2))),
+        },
+    }).encode("utf-8")
+    url = GEMINI_API_URL.format(model=GEMINI_MODEL) + "?" + urlencode({"key": api_key})
+    request = Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    candidates = payload.get("candidates") or []
+    parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
+    return " ".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip() or None
+
+
+def fallback_ai_answer(question, aircraft, selected, details, postal_code, place, range_km):
+    if selected:
+        route = city_route(details)
+        type_label = selected.get("aircraft_type") or details.get("type") or "type inconnu"
+        intro = f"{selected.get('callsign', 'Vol')} est un {type_label}"
+        if route:
+            intro += f" sur {route}"
+        return (
+            f"{intro}. Il est à {round(selected.get('distance') or 0)} km de {place or postal_code}, "
+            f"altitude {round(selected.get('altitude') or 0)} m, vitesse {round(selected.get('speed') or 0)} km/h, "
+            f"cap {round(selected.get('heading') or 0)}°."
+        )
+    if not aircraft:
+        return f"Aucun avion exploitable dans un rayon de {round(range_km)} km autour de {place or postal_code}."
+    nearest = aircraft[0]
+    highest = max(aircraft, key=lambda item: item.get("altitude") or 0)
+    return (
+        f"{len(aircraft)} avion(s) autour de {place or postal_code} dans {round(range_km)} km. "
+        f"Le plus proche est {nearest.get('callsign')} à {round(nearest.get('distance') or 0)} km. "
+        f"Le plus haut est {highest.get('callsign')} à {round(highest.get('altitude') or 0)} m."
+    )
+
+
+def clipped_chars(value, max_chars):
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars - 1].rstrip() + "…"
 
 
 def lat_lon_to_world(lat, lon, zoom):
@@ -917,6 +1146,14 @@ def draw_menu_panel(draw, state, font_small, font_mid):
 
 
 def draw_mode_panel(draw, mode, font_small, font_mid):
+    if mode == "assistant":
+        draw.rounded_rectangle((22, 47, 218, 190), radius=18, fill=(2, 9, 5, 232), outline=(82, 224, 121, 145), width=2)
+        draw.text((120, 67), "ASSISTANT IA", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
+        draw.text((120, 84), clipped(esp32_state.get("ai_status", "local").upper(), 18), fill=(238, 244, 239, 145), font=font_small, anchor="mm")
+        wrapped_text(draw, esp32_state.get("ai_answer") or "Aucune réponse.", (42, 108), 156, font_small, (238, 244, 239, 210), max_lines=5, line_height=15)
+        draw_menu_button(draw, mode, font_small)
+        return
+
     titles = {
         "search": ("RECHERCHE", "Touchez un avion"),
         "favorites": ("FAVORIS", "Vols suivis en jaune"),
@@ -991,6 +1228,29 @@ def clipped(value, size):
     return value[:size - 1] + "…"
 
 
+def wrapped_text(draw, value, xy, max_width, font, fill, max_lines=4, line_height=14):
+    words = str(value or "").split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if draw.textlength(candidate, font=font) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        current = word
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
+        lines[-1] = clipped_chars(lines[-1], max(4, len(lines[-1]) - 1))
+    x, y = xy
+    for index, line in enumerate(lines):
+        draw.text((x, y + index * line_height), line, fill=fill, font=font, anchor="lm")
+
+
 def draw_aircraft_popup(overlay, draw, aircraft, state, font_tiny, font_small, font_mid, font_title):
     details = lookup_aircraft_details_for_png(aircraft)
     panel = (20, 72, 220, 184)
@@ -1016,6 +1276,7 @@ def draw_aircraft_popup(overlay, draw, aircraft, state, font_tiny, font_small, f
     else:
         draw.text((34, 152), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
     draw.text((34, 170), f"{round(aircraft['altitude'] or 0)} m  {round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 165), font=font_tiny, anchor="lm")
+    draw.text((120, 179), "TOUCHER LA FICHE = IA", fill=(141, 255, 111, 145), font=font_tiny, anchor="mm")
     draw.rounded_rectangle((158, 82, 184, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
     draw.text((171, 94), "★", fill=(141, 255, 111, 230), font=font_small, anchor="mm")
     draw.rounded_rectangle((188, 82, 214, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
