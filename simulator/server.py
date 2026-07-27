@@ -13,11 +13,12 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 OPEN_SKY_URL = "https://opensky-network.org/api/states/all"
+AIRPLANES_LIVE_POINT_URL = "https://api.airplanes.live/v2/point/{lat:.5f}/{lon:.5f}/{radius_nm:.1f}"
 PLANESPOTTERS_URL = "https://api.planespotters.net/pub/photos/hex/{hex_code}"
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 USER_AGENT = "FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk/issues)"
-TRAFFIC_CACHE_SECONDS = 12
+TRAFFIC_CACHE_SECONDS = 30
 AIRCRAFT_CACHE_SECONDS = 86400
 ROUTE_CACHE_SECONDS = 21600
 TILE_CACHE_SECONDS = 86400
@@ -79,6 +80,28 @@ def opensky_states(lat, lon, range_km):
             "states": payload.get("states") or [],
             "rate_limit_remaining": response.headers.get("x-rate-limit-remaining"),
         }
+
+
+def airplanes_live_states(lat, lon, range_km):
+    radius_nm = max(1.0, min(250.0, range_km / 1.852))
+    url = AIRPLANES_LIVE_POINT_URL.format(lat=lat, lon=lon, radius_nm=radius_nm)
+    request = Request(url, headers={
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    with urlopen(request, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+        return {
+            "source": "airplanes.live",
+            "time": payload.get("now"),
+            "aircraft": compact_airplanes_live(payload.get("ac") or [], lat, lon, range_km),
+        }
+
+
+def numeric(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def aircraft_details_from_photo(photo):
@@ -325,15 +348,24 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         esp32_state["lon"] = lon
         esp32_state["range_km"] = range_km
 
+        source = "AIRPLANES"
         try:
-            payload = opensky_states(lat, lon, range_km)
-            aircraft = compact_aircraft(payload.get("states") or [], lat, lon, range_km)
+            payload = airplanes_live_states(lat, lon, range_km)
+            aircraft = payload.get("aircraft") or []
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+            try:
+                payload = opensky_states(lat, lon, range_km)
+                aircraft = compact_aircraft(payload.get("states") or [], lat, lon, range_km)
+                source = "OPENSKY"
+            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+                source = "CACHE" if esp32_state["last_aircraft"] else "OFFLINE"
+                aircraft = esp32_state["last_aircraft"]
+
+        if source != "CACHE" and source != "OFFLINE":
             esp32_state["last_aircraft"] = aircraft
             if esp32_state["selected_id"] and not any(item["id"] == esp32_state["selected_id"] for item in aircraft):
                 esp32_state["selected_id"] = None
-            body = render_radar_png(aircraft, esp32_state, source="LIVE")
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-            body = render_radar_png(esp32_state["last_aircraft"], esp32_state, source="OFFLINE")
+        body = render_radar_png(aircraft, esp32_state, source=source)
 
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
@@ -408,6 +440,44 @@ def compact_aircraft(states, lat, lon, range_km):
             "altitude": row[13] if isinstance(row[13] if len(row) > 13 else None, (int, float)) else row[7],
             "speed": (row[9] * 3.6) if isinstance(row[9], (int, float)) else 0,
             "heading": row[10] if isinstance(row[10], (int, float)) else 0,
+        })
+    return sorted(aircraft, key=lambda item: item["distance"])
+
+
+def compact_airplanes_live(items, lat, lon, range_km):
+    aircraft = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aircraft_lat = numeric(item.get("lat"))
+        aircraft_lon = numeric(item.get("lon"))
+        if aircraft_lat is None or aircraft_lon is None:
+            continue
+        if item.get("ground") == "1" or item.get("alt_baro") == "ground":
+            continue
+
+        distance = haversine_km(lat, lon, aircraft_lat, aircraft_lon)
+        if distance > range_km:
+            continue
+
+        callsign = str(item.get("flight") or item.get("r") or item.get("hex") or "").strip()[:8]
+        altitude_ft = numeric(item.get("alt_geom")) or numeric(item.get("alt_baro"))
+        speed_kt = numeric(item.get("gs"))
+        heading = numeric(item.get("track")) or numeric(item.get("true_heading")) or numeric(item.get("mag_heading")) or 0
+        aircraft.append({
+            "id": str(item.get("hex") or callsign),
+            "hex": str(item.get("hex") or "").lower(),
+            "callsign": callsign or "LIVE",
+            "country": str(item.get("ownOp") or item.get("dbFlags") or "Airplanes.live"),
+            "distance": distance,
+            "bearing": initial_bearing_deg(lat, lon, aircraft_lat, aircraft_lon),
+            "latitude": aircraft_lat,
+            "longitude": aircraft_lon,
+            "altitude": altitude_ft * 0.3048 if altitude_ft is not None else 0,
+            "speed": speed_kt * 1.852 if speed_kt is not None else 0,
+            "heading": heading,
+            "aircraft_type": item.get("desc") or item.get("t"),
+            "registration": item.get("r"),
         })
     return sorted(aircraft, key=lambda item: item["distance"])
 
@@ -619,10 +689,6 @@ def render_radar_png(aircraft, state, source):
         a = radians(angle)
         draw.line((center, center, center + cos(a) * radius, center + sin(a) * radius), fill=(76, 194, 83, 48), width=1)
 
-    sweep_angle = radians((int(time() * 50) % 360) - 90)
-    draw.pieslice((center - radius, center - radius, center + radius, center + radius), int(time() * 50) % 360 - 42, int(time() * 50) % 360, fill=(82, 224, 121, 44))
-    draw.line((center, center, center + cos(sweep_angle) * radius, center + sin(sweep_angle) * radius), fill=(120, 255, 120, 178), width=2)
-
     font_tiny = load_font(8)
     font_small = load_font(10)
     font_big = load_font(32)
@@ -630,7 +696,13 @@ def render_radar_png(aircraft, state, source):
     font_title = load_font(22)
 
     draw.text((center, 26), "18:47", fill=(232, 244, 234, 205), font=font_mid, anchor="mm")
-    draw.text((center, 43), "LIVE OPENSKY" if source == "LIVE" else "OFFLINE", fill=(130, 235, 119, 190), font=font_tiny, anchor="mm")
+    labels = {
+        "AIRPLANES": "AIRPLANES.LIVE",
+        "OPENSKY": "LIVE OPENSKY",
+        "CACHE": "CACHE LIVE",
+        "OFFLINE": "OFFLINE",
+    }
+    draw.text((center, 43), labels.get(source, source), fill=(130, 235, 119, 190), font=font_tiny, anchor="mm")
     draw.text((center, 67), str(len(aircraft)), fill=green, font=font_big, anchor="mm")
     draw.text((center, 88), "AVIONS", fill=green, font=font_mid, anchor="mm")
     draw.text((176, 121), str(int(range_km * 0.4)), fill=(120, 210, 110, 165), font=font_small, anchor="lm")
@@ -724,7 +796,7 @@ def draw_settings(draw, state, font_small, font_mid):
         draw.text((x + 17, 126), str(value), fill=(141, 255, 111, 240) if active else (238, 244, 239, 170), font=font_small, anchor="mm")
         x += 42
     draw.text((42, 158), "Source", fill=(238, 244, 239, 150), font=font_small, anchor="lm")
-    draw.text((94, 158), "OpenSky + carte", fill=(141, 255, 111, 225), font=font_small, anchor="lm")
+    draw.text((94, 158), "Airplanes + secours", fill=(141, 255, 111, 225), font=font_small, anchor="lm")
     draw_nav(draw, "settings", font_small)
 
 
@@ -747,7 +819,7 @@ def draw_aircraft_popup(image, draw, aircraft, state, font_tiny, font_small, fon
 
     draw.text((40, 100), "AVION SÉLECTIONNÉ", fill=(141, 255, 111, 220), font=font_tiny, anchor="lm")
     draw.text((40, 124), clipped(aircraft["callsign"], 8), fill=(112, 255, 113, 255), font=font_title, anchor="lm")
-    subtitle = clipped(details.get("type") or aircraft.get("country") or "OpenSky", 15)
+    subtitle = clipped(aircraft.get("aircraft_type") or details.get("type") or aircraft.get("country") or "Live", 15)
     draw.text((40, 142), subtitle, fill=(238, 244, 239, 188), font=font_small, anchor="lm")
     route = city_route(details)
     if route:
