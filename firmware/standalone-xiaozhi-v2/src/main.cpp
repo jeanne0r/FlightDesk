@@ -254,8 +254,9 @@ bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
   client.setInsecure();
   HTTPClient http;
   if (!http.begin(client, url)) return false;
-  http.setTimeout(4000);
+  http.setTimeout(8000);
   http.setUserAgent("FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk)");
+  http.addHeader("Accept", "image/jpeg,image/*");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = http.GET();
   if (code != 200) {
@@ -264,24 +265,41 @@ bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
   }
   int size = http.getSize();
   const size_t max_len = 60000;
-  if (size <= 0 || size > (int)max_len) {
+  if (size > (int)max_len) {
     http.end();
     return false;
   }
-  buffer = (uint8_t *)malloc(size);
+  size_t capacity = size > 0 ? (size_t)size : max_len;
+  buffer = (uint8_t *)malloc(capacity);
   if (!buffer) {
     http.end();
     return false;
   }
   WiFiClient *stream = http.getStreamPtr();
-  size_t read = stream->readBytes(buffer, size);
+  uint32_t start = millis();
+  while ((size <= 0 || length < (size_t)size) && length < capacity && millis() - start < 8000) {
+    size_t available = stream->available();
+    if (available) {
+      size_t room = capacity - length;
+      size_t wanted = min(available, room);
+      int got = stream->readBytes(buffer + length, wanted);
+      if (got > 0) {
+        length += got;
+        start = millis();
+      }
+    } else if (!stream->connected()) {
+      break;
+    } else {
+      delay(5);
+      yield();
+    }
+  }
   http.end();
-  if (read != (size_t)size) {
+  if (length < 256 || buffer[0] != 0xFF || buffer[1] != 0xD8) {
     free(buffer);
     buffer = nullptr;
     return false;
   }
-  length = read;
   return true;
 }
 
@@ -655,7 +673,7 @@ String askGemini(bool selected_only) {
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(6000);
-  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=" + key;
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=" + key;
   if (!http.begin(client, url)) {
     ai_status = "IA KO: HTTP";
     return "API Gemini inaccessible.";
