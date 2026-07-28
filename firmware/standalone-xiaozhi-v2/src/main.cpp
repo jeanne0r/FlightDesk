@@ -240,10 +240,13 @@ String photoUrlFromJson(const String &hex) {
   http.end();
   if (error) return "";
   JsonVariantConst photo = doc["photos"][0];
-  const char *large = photo["thumbnail_large"]["src"] | "";
-  if (large[0]) return String(large);
   const char *thumb = photo["thumbnail"]["src"] | "";
-  return String(thumb);
+  const char *large = photo["thumbnail_large"]["src"] | "";
+  String src = thumb[0] ? String(thumb) : String(large);
+  if (!src.length()) return "";
+  src.replace("https://", "");
+  src.replace("http://", "");
+  return "https://images.weserv.nl/?url=" + src + "&w=66&h=44&fit=cover&output=jpg&q=70";
 }
 
 bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
@@ -317,10 +320,15 @@ void loadPhotoForAircraft(const Aircraft &a) {
   photo_status = "PHOTO...";
   yield();
   String url = photoUrlFromJson(a.hex);
+  if (!url.length()) {
+    photo_status = "NO PHOTO";
+    photo_loading = false;
+    return;
+  }
   uint8_t *jpeg_bytes = nullptr;
   size_t jpeg_len = 0;
   if (!downloadPhotoBytes(url, jpeg_bytes, jpeg_len)) {
-    photo_status = "SANS PHOTO";
+    photo_status = "DL KO";
     photo_loading = false;
     return;
   }
@@ -328,14 +336,9 @@ void loadPhotoForAircraft(const Aircraft &a) {
   for (int i = 0; i < PHOTO_W * PHOTO_H; ++i) photo_pixels[i] = rgb565(1, 9, 5);
   bool ok = false;
   if (photo_jpeg.openRAM(jpeg_bytes, jpeg_len, jpegPhotoDraw)) {
-    int scale = JPEG_SCALE_QUARTER;
-    int out_w = photo_jpeg.getWidth() / 4;
-    int out_h = photo_jpeg.getHeight() / 4;
-    if (out_w > PHOTO_W * 2 || out_h > PHOTO_H * 2) {
-      scale = JPEG_SCALE_EIGHTH;
-      out_w = photo_jpeg.getWidth() / 8;
-      out_h = photo_jpeg.getHeight() / 8;
-    }
+    int scale = 0;
+    int out_w = photo_jpeg.getWidth();
+    int out_h = photo_jpeg.getHeight();
     photo_offset_x = (PHOTO_W - out_w) / 2;
     photo_offset_y = (PHOTO_H - out_h) / 2;
     ok = photo_jpeg.decode(0, 0, scale);
