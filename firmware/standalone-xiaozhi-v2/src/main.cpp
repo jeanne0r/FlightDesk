@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include <HTTPClient.h>
+#include <JPEGDEC.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
@@ -22,6 +23,8 @@ constexpr int SCREEN = 240;
 constexpr int CX = 120;
 constexpr int CY = 120;
 constexpr int RADAR_R = 112;
+constexpr int PHOTO_W = 66;
+constexpr int PHOTO_H = 44;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -85,6 +88,12 @@ float sweep_deg = 0;
 uint32_t last_traffic_ms = 0;
 uint32_t last_frame_ms = 0;
 uint32_t last_touch_ms = 0;
+uint16_t photo_pixels[PHOTO_W * PHOTO_H];
+String photo_hex;
+String photo_status = "PHOTO";
+bool photo_ready = false;
+int photo_offset_x = 0;
+int photo_offset_y = 0;
 
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -185,6 +194,122 @@ void drawButton(int x, int y, int w, int h, const String &label, bool active = f
   gfx->getTextBounds(label, 0, 0, &x1, &y1, &tw, &th);
   gfx->setCursor(x + (w - tw) / 2, y + (h - th) / 2);
   gfx->print(label);
+}
+
+void clearPhotoCache() {
+  photo_hex = "";
+  photo_status = "PHOTO";
+  photo_ready = false;
+}
+
+int jpegPhotoDraw(JPEGDRAW *pDraw) {
+  for (int yy = 0; yy < pDraw->iHeight; ++yy) {
+    int dy = pDraw->y + yy + photo_offset_y;
+    if (dy < 0 || dy >= PHOTO_H) continue;
+    for (int xx = 0; xx < pDraw->iWidthUsed; ++xx) {
+      int dx = pDraw->x + xx + photo_offset_x;
+      if (dx < 0 || dx >= PHOTO_W) continue;
+      photo_pixels[dy * PHOTO_W + dx] = pDraw->pPixels[yy * pDraw->iWidth + xx];
+    }
+  }
+  return 1;
+}
+
+String photoUrlFromJson(const String &hex) {
+  if (WiFi.status() != WL_CONNECTED || !hex.length()) return "";
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  String url = "https://api.planespotters.net/pub/photos/hex/" + hex;
+  if (!http.begin(client, url)) return "";
+  http.setUserAgent("FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk)");
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    return "";
+  }
+  DynamicJsonDocument doc(24576);
+  DeserializationError error = deserializeJson(doc, http.getStream());
+  http.end();
+  if (error) return "";
+  JsonVariantConst photo = doc["photos"][0];
+  const char *large = photo["thumbnail_large"]["src"] | "";
+  if (large[0]) return String(large);
+  const char *thumb = photo["thumbnail"]["src"] | "";
+  return String(thumb);
+}
+
+bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
+  buffer = nullptr;
+  length = 0;
+  if (!url.length()) return false;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  if (!http.begin(client, url)) return false;
+  http.setUserAgent("FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk)");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    return false;
+  }
+  int size = http.getSize();
+  const size_t max_len = 60000;
+  if (size <= 0 || size > (int)max_len) {
+    http.end();
+    return false;
+  }
+  buffer = (uint8_t *)malloc(size);
+  if (!buffer) {
+    http.end();
+    return false;
+  }
+  WiFiClient *stream = http.getStreamPtr();
+  size_t read = stream->readBytes(buffer, size);
+  http.end();
+  if (read != (size_t)size) {
+    free(buffer);
+    buffer = nullptr;
+    return false;
+  }
+  length = read;
+  return true;
+}
+
+void loadPhotoForAircraft(const Aircraft &a) {
+  if (photo_hex == a.hex) return;
+  clearPhotoCache();
+  photo_hex = a.hex;
+  photo_status = "PHOTO...";
+  String url = photoUrlFromJson(a.hex);
+  uint8_t *jpeg_bytes = nullptr;
+  size_t jpeg_len = 0;
+  if (!downloadPhotoBytes(url, jpeg_bytes, jpeg_len)) {
+    photo_status = "SANS PHOTO";
+    return;
+  }
+
+  for (int i = 0; i < PHOTO_W * PHOTO_H; ++i) photo_pixels[i] = rgb565(1, 9, 5);
+  JPEGDEC jpeg;
+  bool ok = false;
+  if (jpeg.openRAM(jpeg_bytes, jpeg_len, jpegPhotoDraw)) {
+    int scale = JPEG_SCALE_QUARTER;
+    int out_w = jpeg.getWidth() / 4;
+    int out_h = jpeg.getHeight() / 4;
+    if (out_w > PHOTO_W * 2 || out_h > PHOTO_H * 2) {
+      scale = JPEG_SCALE_EIGHTH;
+      out_w = jpeg.getWidth() / 8;
+      out_h = jpeg.getHeight() / 8;
+    }
+    photo_offset_x = (PHOTO_W - out_w) / 2;
+    photo_offset_y = (PHOTO_H - out_h) / 2;
+    ok = jpeg.decode(0, 0, scale);
+    jpeg.close();
+  }
+  free(jpeg_bytes);
+  photo_ready = ok;
+  photo_status = ok ? "" : "PHOTO KO";
 }
 
 void drawMapWatermark() {
@@ -299,10 +424,20 @@ void drawPopup() {
   gfx->printf("%dkm  %dkm/h", (int)roundf(a.distance_km), (int)roundf(a.speed_kmh));
   gfx->setCursor(28, 160);
   gfx->printf("%dm  %ddeg", (int)roundf(a.altitude_m), (int)roundf(a.heading_deg));
+  gfx->fillRoundRect(144, 108, 66, 44, 8, rgb565(1, 9, 5));
   gfx->drawRoundRect(144, 108, 66, 44, 8, rgb565(24, 96, 36));
-  gfx->setTextColor(rgb565(98, 190, 100));
-  gfx->setCursor(161, 126);
-  gfx->print("PHOTO");
+  if (photo_ready && photo_hex == a.hex) {
+    for (int py = 0; py < PHOTO_H; ++py) {
+      for (int px = 0; px < PHOTO_W; ++px) {
+        gfx->drawPixel(144 + px, 108 + py, photo_pixels[py * PHOTO_W + px]);
+      }
+    }
+    gfx->drawRoundRect(144, 108, 66, 44, 8, COL_GREEN);
+  } else {
+    gfx->setTextColor(rgb565(98, 190, 100));
+    gfx->setCursor(150, 126);
+    gfx->print(photo_status.substring(0, 10));
+  }
   drawButton(154, 160, 34, 24, "IA", false);
   drawButton(192, 160, 24, 24, "X", false);
 }
@@ -446,6 +581,7 @@ bool fetchTraffic() {
     if (isnan(a.heading_deg)) a.heading_deg = jsonFloat(item["mag_heading"], a.bearing_deg);
   }
   selected_index = -1;
+  clearPhotoCache();
   return true;
 }
 
@@ -610,7 +746,10 @@ void handleTouch(int x, int y) {
       best = i;
     }
   }
-  if (best >= 0) selected_index = best;
+  if (best >= 0) {
+    selected_index = best;
+    loadPhotoForAircraft(aircraft[selected_index]);
+  }
 }
 
 }  // namespace
