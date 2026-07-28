@@ -35,7 +35,7 @@ constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
 constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
 constexpr int VOICE_SAMPLE_RATE = 16000;
-constexpr int VOICE_RECORD_MS = 1000;
+constexpr int VOICE_RECORD_MS = 1400;
 constexpr bool AI_SPEAK_RESPONSE = false;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
@@ -129,6 +129,14 @@ String speech_url;
 String pending_speech_text;
 uint32_t pending_speech_ms = 0;
 bool ai_busy = false;
+
+uint8_t *allocAudioBuffer(size_t size) {
+  if (psramFound()) {
+    uint8_t *ptr = (uint8_t *)ps_malloc(size);
+    if (ptr) return ptr;
+  }
+  return (uint8_t *)malloc(size);
+}
 
 void writeWavHeader(uint8_t *wav, uint32_t pcm_size) {
   uint32_t file_size = 36 + pcm_size;
@@ -959,11 +967,15 @@ String recordVoicePcmBase64() {
   }
   const size_t pcm_size = (VOICE_SAMPLE_RATE * VOICE_RECORD_MS / 1000) * 2;
   const size_t b64_size = ((pcm_size + 2) / 3) * 4;
-  if (ESP.getFreeHeap() < (int)(pcm_size + b64_size + 15000)) {
+  if (!psramFound() && ESP.getFreeHeap() < (int)(pcm_size + b64_size + 15000)) {
     ai_status = "RAM MIC KO";
     return "";
   }
-  uint8_t *pcm = (uint8_t *)malloc(pcm_size);
+  if (ESP.getFreeHeap() < (int)(b64_size + 14000)) {
+    ai_status = "RAM JSON KO";
+    return "";
+  }
+  uint8_t *pcm = allocAudioBuffer(pcm_size);
   if (!pcm) {
     ai_status = "RAM MIC KO";
     return "";
