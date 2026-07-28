@@ -41,6 +41,7 @@ constexpr uint16_t COL_PANEL = 0x0204;
 constexpr uint16_t COL_GREEN = 0x7FEF;
 constexpr uint16_t COL_DIM = 0x2D86;
 constexpr uint16_t COL_TEXT = 0xE7FF;
+constexpr uint16_t COL_GLOW = 0x4FE8;
 constexpr uint32_t TRAFFIC_INTERVAL_MS = 30000;
 constexpr uint32_t FRAME_INTERVAL_MS = 50;
 
@@ -187,9 +188,8 @@ void drawButton(int x, int y, int w, int h, const String &label, bool active = f
 }
 
 void drawMapWatermark() {
-  uint16_t contour = rgb565(3, 24, 12);
-  uint16_t road = rgb565(7, 43, 18);
-  uint16_t text = rgb565(8, 50, 20);
+  uint16_t contour = rgb565(2, 20, 12);
+  uint16_t road = rgb565(4, 32, 18);
   for (int line = -3; line <= 3; ++line) {
     int last_x = -1, last_y = -1;
     for (int t = -RADAR_R; t <= RADAR_R; t += 8) {
@@ -220,26 +220,22 @@ void drawMapWatermark() {
       last_y = y;
     }
   }
-  gfx->setTextColor(text);
-  gfx->setTextSize(1);
-  gfx->setCursor(82, 150);
-  gfx->print(settings.place.substring(0, 12));
 }
 
 void drawRadarBase() {
   gfx->fillScreen(rgb565(0, 2, 2));
-  gfx->fillCircle(CX, CY, 119, rgb565(0, 11, 7));
-  gfx->fillCircle(CX, CY, RADAR_R, rgb565(1, 9, 8));
-  gfx->fillCircle(CX, CY, 87, rgb565(2, 18, 10));
+  gfx->fillCircle(CX, CY, 119, rgb565(0, 12, 8));
+  gfx->fillCircle(CX, CY, RADAR_R, rgb565(1, 12, 10));
+  gfx->fillCircle(CX, CY, 88, rgb565(1, 17, 11));
   drawMapWatermark();
-  gfx->drawCircle(CX, CY, 116, rgb565(28, 92, 38));
-  gfx->drawCircle(CX, CY, RADAR_R, rgb565(42, 128, 54));
-  gfx->drawCircle(CX, CY, 84, rgb565(9, 50, 22));
-  gfx->drawCircle(CX, CY, 56, rgb565(9, 50, 22));
-  gfx->drawCircle(CX, CY, 28, rgb565(9, 50, 22));
+  gfx->drawCircle(CX, CY, 116, rgb565(23, 86, 38));
+  gfx->drawCircle(CX, CY, RADAR_R, rgb565(56, 158, 70));
+  gfx->drawCircle(CX, CY, 84, rgb565(8, 58, 27));
+  gfx->drawCircle(CX, CY, 56, rgb565(8, 58, 27));
+  gfx->drawCircle(CX, CY, 28, rgb565(8, 58, 27));
   for (int deg = 0; deg < 360; deg += 30) {
     float a = deg2rad(deg);
-    gfx->drawLine(CX, CY, CX + cosf(a) * RADAR_R, CY + sinf(a) * RADAR_R, rgb565(5, 34, 20));
+    gfx->drawLine(CX, CY, CX + cosf(a) * RADAR_R, CY + sinf(a) * RADAR_R, rgb565(5, 40, 23));
   }
 
   gfx->setTextColor(rgb565(108, 212, 104));
@@ -266,44 +262,54 @@ void drawAircraftSymbol(const Aircraft &a, bool selected) {
   int x, y;
   polarToScreen(a.bearing_deg, a.distance_km, settings.range_km, x, y);
   float h = deg2rad((a.heading_deg ? a.heading_deg : a.bearing_deg) - 90.0f);
-  int scale = selected ? 11 : 8;
+  int scale = selected ? 11 : 9;
   int x1 = x + cosf(h) * scale;
   int y1 = y + sinf(h) * scale;
   int x2 = x + cosf(h + 2.45f) * (scale - 2);
   int y2 = y + sinf(h + 2.45f) * (scale - 2);
   int x3 = x + cosf(h - 2.45f) * (scale - 2);
   int y3 = y + sinf(h - 2.45f) * (scale - 2);
-  gfx->drawCircle(x, y, selected ? 13 : 10, rgb565(19, 93, 31));
-  gfx->drawCircle(x, y, selected ? 9 : 7, rgb565(30, 145, 42));
-  gfx->fillTriangle(x1, y1, x2, y2, x3, y3, selected ? COL_TEXT : COL_GREEN);
+  if (selected) {
+    gfx->drawCircle(x, y, 13, rgb565(28, 118, 38));
+    gfx->drawLine(CX, CY, x, y, rgb565(58, 190, 76));
+  }
+  gfx->drawTriangle(x1 - 1, y1, x2 - 1, y2, x3 - 1, y3, rgb565(18, 76, 28));
+  gfx->drawTriangle(x1 + 1, y1, x2 + 1, y2, x3 + 1, y3, rgb565(18, 76, 28));
+  gfx->fillTriangle(x1, y1, x2, y2, x3, y3, selected ? COL_TEXT : COL_GLOW);
   gfx->drawTriangle(x1, y1, x2, y2, x3, y3, COL_GREEN);
 }
 
 void drawPopup() {
   if (selected_index < 0 || selected_index >= aircraft_count) return;
   const Aircraft &a = aircraft[selected_index];
-  gfx->fillRoundRect(20, 74, 200, 110, 12, rgb565(1, 9, 5));
-  gfx->drawRoundRect(20, 74, 200, 110, 12, COL_GREEN);
+  gfx->fillRoundRect(16, 68, 208, 126, 13, rgb565(1, 10, 6));
+  gfx->drawRoundRect(16, 68, 208, 126, 13, COL_GREEN);
   gfx->setTextColor(COL_GREEN);
   gfx->setTextSize(1);
-  gfx->setCursor(34, 91);
+  gfx->setCursor(28, 84);
   gfx->print("AVION SELECTIONNE");
-  gfx->setTextSize(3);
-  gfx->setCursor(34, 108);
+  gfx->setTextSize(a.callsign.length() > 6 ? 2 : 3);
+  gfx->setCursor(28, 102);
   gfx->print(a.callsign.substring(0, 8));
   gfx->setTextSize(1);
   gfx->setTextColor(COL_TEXT);
-  gfx->setCursor(34, 136);
-  gfx->print(a.type.length() ? a.type.substring(0, 17) : "TYPE INCONNU");
-  gfx->setCursor(34, 154);
-  gfx->printf("%dkm %dkm/h", (int)roundf(a.distance_km), (int)roundf(a.speed_kmh));
-  gfx->setCursor(34, 170);
-  gfx->printf("%dm %ddeg", (int)roundf(a.altitude_m), (int)roundf(a.heading_deg));
-  drawButton(160, 82, 24, 24, "*", false);
-  drawButton(190, 82, 24, 24, "X", false);
-  gfx->setTextColor(COL_GREEN);
-  gfx->setCursor(74, 178);
-  gfx->print("FICHE = IA");
+  gfx->setCursor(28, 130);
+  gfx->print(a.type.length() ? a.type.substring(0, 18) : "TYPE INCONNU");
+  gfx->setCursor(28, 146);
+  gfx->printf("%dkm  %dkm/h", (int)roundf(a.distance_km), (int)roundf(a.speed_kmh));
+  gfx->setCursor(28, 160);
+  gfx->printf("%dm  %ddeg", (int)roundf(a.altitude_m), (int)roundf(a.heading_deg));
+  gfx->drawRoundRect(144, 108, 66, 44, 8, rgb565(24, 96, 36));
+  gfx->setTextColor(rgb565(98, 190, 100));
+  gfx->setCursor(161, 126);
+  gfx->print("PHOTO");
+  drawButton(154, 160, 34, 24, "IA", false);
+  drawButton(192, 160, 24, 24, "X", false);
+}
+
+void drawBottomControls() {
+  drawButton(50, 198, 58, 26, "IA", false);
+  drawButton(132, 198, 58, 26, "MENU", false);
 }
 
 void drawMenu() {
@@ -386,7 +392,7 @@ void render() {
   else if (screen_mode == "postal") drawPostal();
   else if (screen_mode == "ai") drawAI();
   else if (selected_index >= 0) drawPopup();
-  else drawButton(88, 198, 64, 26, "MENU", false);
+  else drawBottomControls();
   gfx->flush();
 }
 
@@ -460,17 +466,22 @@ String localAI(bool selected_only) {
 String askGemini(bool selected_only) {
   String key = FLIGHTDESK_GEMINI_API_KEY;
   if (!key.length()) {
-    ai_status = "LOCAL";
+    ai_status = "LOCAL: CLE ABSENTE";
+    return localAI(selected_only);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    ai_status = "LOCAL: WIFI";
     return localAI(selected_only);
   }
   String context = localAI(selected_only);
+  ai_status = "GEMINI...";
   String prompt = "Reponds en francais en maximum 2 phrases pour un petit ecran radar. Donnees: " + context;
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
   String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + key;
   if (!http.begin(client, url)) {
-    ai_status = "LOCAL";
+    ai_status = "LOCAL: HTTP";
     return context;
   }
   http.addHeader("Content-Type", "application/json");
@@ -486,14 +497,14 @@ String askGemini(bool selected_only) {
   int code = http.POST(payload);
   if (code != 200) {
     http.end();
-    ai_status = "LOCAL";
+    ai_status = "LOCAL: " + String(code);
     return context;
   }
   DynamicJsonDocument answer_doc(8192);
   DeserializationError err = deserializeJson(answer_doc, http.getStream());
   http.end();
   if (err) {
-    ai_status = "LOCAL";
+    ai_status = "LOCAL: JSON";
     return context;
   }
   const char *text = answer_doc["candidates"][0]["content"]["parts"][0]["text"] | "";
@@ -520,18 +531,23 @@ bool readTouch(int &x, int &y) {
 
 void handleTouch(int x, int y) {
   if (selected_index >= 0) {
-    if (x >= 188 && x <= 220 && y >= 76 && y <= 112) {
+    if (x >= 190 && x <= 224 && y >= 154 && y <= 194) {
       selected_index = -1;
       return;
     }
-    if (x >= 20 && x <= 220 && y >= 74 && y <= 184) {
+    if (x >= 148 && x <= 190 && y >= 154 && y <= 194) {
       ai_answer = askGemini(true);
       screen_mode = "ai";
       return;
     }
   }
-  if (x >= 88 && x <= 152 && y >= 194 && y <= 226) {
-    screen_mode = screen_mode == "menu" ? "radar" : "menu";
+  if (screen_mode == "radar" && selected_index < 0 && x >= 45 && x <= 113 && y >= 192 && y <= 230) {
+    ai_answer = askGemini(false);
+    screen_mode = "ai";
+    return;
+  }
+  if (screen_mode == "radar" && selected_index < 0 && x >= 127 && x <= 195 && y >= 192 && y <= 230) {
+    screen_mode = "menu";
     selected_index = -1;
     return;
   }
