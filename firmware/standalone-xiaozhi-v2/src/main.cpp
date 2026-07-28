@@ -12,6 +12,7 @@
 #include <AudioGeneratorMP3.h>
 #include <AudioOutputI2S.h>
 #include <math.h>
+#include <new>
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -111,6 +112,8 @@ int photo_offset_x = 0;
 int photo_offset_y = 0;
 int pending_photo_index = -1;
 String speech_url;
+String pending_speech_text;
+uint32_t pending_speech_ms = 0;
 
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -275,16 +278,32 @@ void startSpeech(const String &text) {
   if (WiFi.status() != WL_CONNECTED) return;
   String clean = speechText(text);
   if (!clean.length()) return;
+  if (ESP.getFreeHeap() < 90000) {
+    ai_status = "VOCAL OFF";
+    return;
+  }
   stopSpeech();
-  digitalWrite(PIN_SPEAKER_ENABLE, HIGH);
   speech_url = "http://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=fr&q=" + urlEncode(clean);
-  speech_file = new AudioFileSourceHTTPStream(speech_url.c_str());
-  speech_buffer = new AudioFileSourceBuffer(speech_file, 4096);
-  speech_out = new AudioOutputI2S(0, 1);
+  speech_file = new (std::nothrow) AudioFileSourceHTTPStream(speech_url.c_str());
+  if (!speech_file) {
+    ai_status = "VOCAL OFF";
+    return;
+  }
+  speech_buffer = new (std::nothrow) AudioFileSourceBuffer(speech_file, 2048);
+  speech_out = new (std::nothrow) AudioOutputI2S();
+  speech_mp3 = new (std::nothrow) AudioGeneratorMP3();
+  if (!speech_buffer || !speech_out || !speech_mp3) {
+    stopSpeech();
+    ai_status = "VOCAL OFF";
+    return;
+  }
   speech_out->SetPinout(PIN_I2S_BCLK, PIN_I2S_LRCLK, PIN_I2S_DOUT);
-  speech_out->SetGain(0.45f);
-  speech_mp3 = new AudioGeneratorMP3();
-  if (!speech_mp3->begin(speech_buffer, speech_out)) stopSpeech();
+  speech_out->SetGain(0.35f);
+  digitalWrite(PIN_SPEAKER_ENABLE, HIGH);
+  if (!speech_mp3->begin(speech_buffer, speech_out)) {
+    stopSpeech();
+    ai_status = "VOCAL OFF";
+  }
 }
 
 void serviceSpeech() {
@@ -294,6 +313,20 @@ void serviceSpeech() {
   } else {
     stopSpeech();
   }
+}
+
+void queueSpeech(const String &text) {
+  pending_speech_text = speechText(text);
+  pending_speech_ms = millis() + 900;
+}
+
+void servicePendingSpeech() {
+  if (!pending_speech_text.length()) return;
+  if (speech_mp3 && speech_mp3->isRunning()) return;
+  if ((int32_t)(millis() - pending_speech_ms) < 0) return;
+  String text = pending_speech_text;
+  pending_speech_text = "";
+  startSpeech(text);
 }
 
 int jpegPhotoDraw(JPEGDRAW *pDraw) {
@@ -844,15 +877,15 @@ void handleTouch(int x, int y) {
     }
     if (x >= 148 && x <= 190 && y >= 154 && y <= 194) {
       ai_answer = askGemini(true);
-      startSpeech(ai_answer);
       screen_mode = "ai";
+      queueSpeech(ai_answer);
       return;
     }
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 45 && x <= 113 && y >= 192 && y <= 230) {
     ai_answer = askGemini(false);
-    startSpeech(ai_answer);
     screen_mode = "ai";
+    queueSpeech(ai_answer);
     return;
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 127 && x <= 195 && y >= 192 && y <= 230) {
@@ -871,8 +904,8 @@ void handleTouch(int x, int y) {
     }
     else if (x >= 128 && x <= 212 && y >= 160 && y <= 188) {
       ai_answer = askGemini(false);
-      startSpeech(ai_answer);
       screen_mode = "ai";
+      queueSpeech(ai_answer);
     } else if (x >= 72 && x <= 168 && y >= 84 && y <= 112) screen_mode = "radar";
     return;
   }
@@ -965,6 +998,7 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
   serviceSpeech();
+  servicePendingSpeech();
   uint32_t now = millis();
   if (now - last_traffic_ms > TRAFFIC_INTERVAL_MS) {
     fetchTraffic();
