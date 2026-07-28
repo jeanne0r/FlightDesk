@@ -34,8 +34,8 @@ constexpr int RADAR_R = 112;
 constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
 constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
-constexpr int VOICE_SAMPLE_RATE = 8000;
-constexpr int VOICE_RECORD_MS = 1100;
+constexpr int VOICE_SAMPLE_RATE = 16000;
+constexpr int VOICE_RECORD_MS = 1000;
 constexpr bool AI_SPEAK_RESPONSE = false;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
@@ -950,25 +950,23 @@ String askGemini(bool selected_only) {
   return String(text);
 }
 
-String recordVoiceWavBase64() {
+String recordVoicePcmBase64() {
   stopSpeech();
-  if (!configureAudioCodecRate(audio_driver::RATE_8K)) {
+  if (!configureAudioCodecRate(audio_driver::RATE_16K)) {
     ai_status = "MIC KO";
     return "";
   }
   const size_t pcm_size = (VOICE_SAMPLE_RATE * VOICE_RECORD_MS / 1000) * 2;
-  const size_t wav_size = 44 + pcm_size;
-  const size_t b64_size = ((wav_size + 2) / 3) * 4;
-  if (ESP.getFreeHeap() < (int)(wav_size + b64_size + 45000)) {
+  const size_t b64_size = ((pcm_size + 2) / 3) * 4;
+  if (ESP.getFreeHeap() < (int)(pcm_size + b64_size + 15000)) {
     ai_status = "RAM MIC KO";
     return "";
   }
-  uint8_t *wav = (uint8_t *)malloc(wav_size);
-  if (!wav) {
+  uint8_t *pcm = (uint8_t *)malloc(pcm_size);
+  if (!pcm) {
     ai_status = "RAM MIC KO";
     return "";
   }
-  writeWavHeader(wav, pcm_size);
 
   i2s_driver_uninstall(I2S_NUM_0);
   i2s_config_t cfg = {};
@@ -992,7 +990,7 @@ String recordVoiceWavBase64() {
 
   if (i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr) != ESP_OK || i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK) {
     i2s_driver_uninstall(I2S_NUM_0);
-    free(wav);
+    free(pcm);
     ai_status = "MIC KO";
     return "";
   }
@@ -1005,19 +1003,19 @@ String recordVoiceWavBase64() {
     yield();
   }
 
-  size_t offset = 44;
-  while (offset < wav_size) {
-    size_t want = min((size_t)1024, wav_size - offset);
+  size_t offset = 0;
+  while (offset < pcm_size) {
+    size_t want = min((size_t)1024, pcm_size - offset);
     bytes_read = 0;
-    if (i2s_read(I2S_NUM_0, wav + offset, want, &bytes_read, pdMS_TO_TICKS(150)) != ESP_OK) break;
+    if (i2s_read(I2S_NUM_0, pcm + offset, want, &bytes_read, pdMS_TO_TICKS(150)) != ESP_OK) break;
     offset += bytes_read;
     yield();
   }
   i2s_driver_uninstall(I2S_NUM_0);
-  if (offset < wav_size) memset(wav + offset, 0, wav_size - offset);
+  if (offset < pcm_size) memset(pcm + offset, 0, pcm_size - offset);
 
-  String encoded = base64::encode(wav, wav_size);
-  free(wav);
+  String encoded = base64::encode(pcm, pcm_size);
+  free(pcm);
   if (encoded.length() < b64_size - 8) {
     ai_status = "RAM MIC KO";
     return "";
@@ -1043,7 +1041,7 @@ String askGeminiVoice(bool selected_only) {
   ai_answer = "Parlez maintenant...";
   screen_mode = "ai";
   render();
-  String audio_b64 = recordVoiceWavBase64();
+  String audio_b64 = recordVoicePcmBase64();
   if (!audio_b64.length()) {
     ai_busy = false;
     return "Micro indisponible.";
@@ -1074,7 +1072,7 @@ String askGeminiVoice(bool selected_only) {
   payload.reserve(audio_b64.length() + prompt.length() + 520);
   payload = "{\"contents\":[{\"parts\":[{\"text\":";
   payload += jsonQuote(prompt);
-  payload += "},{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"";
+  payload += "},{\"inline_data\":{\"mime_type\":\"audio/pcm;rate=16000\",\"data\":\"";
   payload += audio_b64;
   payload += "\"}}]}],\"generationConfig\":{\"temperature\":0.35,\"maxOutputTokens\":90}}";
   audio_b64 = "";
