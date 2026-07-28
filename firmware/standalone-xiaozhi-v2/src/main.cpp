@@ -58,6 +58,7 @@ constexpr int PIN_I2S_DOUT = 8;
 constexpr int PIN_SPEAKER_ENABLE = 46;
 constexpr int PIN_I2C_SDA_AUDIO = 15;
 constexpr int PIN_I2C_SCL_AUDIO = 14;
+constexpr i2s_port_t I2S_MIC_PORT = I2S_NUM_1;
 
 constexpr uint16_t COL_BG = 0x0000;
 constexpr uint16_t COL_PANEL = 0x0204;
@@ -328,7 +329,7 @@ bool initAudioCodec() {
   cfg.input_device = audio_driver::ADC_INPUT_LINE1;
   cfg.output_device = audio_driver::DAC_OUTPUT_ALL;
   cfg.i2s.bits = audio_driver::BIT_LENGTH_16BITS;
-  cfg.i2s.rate = audio_driver::RATE_24K;
+  cfg.i2s.rate = audio_driver::RATE_16K;
   cfg.i2s.channels = audio_driver::CHANNELS2;
   cfg.i2s.fmt = audio_driver::I2S_NORMAL;
   cfg.i2s.mode = audio_driver::MODE_SLAVE;
@@ -953,7 +954,7 @@ String askGemini(bool selected_only) {
 String recordVoicePcmBase64() {
   stopSpeech();
   if (!configureAudioCodecRate(audio_driver::RATE_16K)) {
-    ai_status = "MIC KO";
+    ai_status = "MIC KO: CODEC";
     return "";
   }
   const size_t pcm_size = (VOICE_SAMPLE_RATE * VOICE_RECORD_MS / 1000) * 2;
@@ -968,7 +969,7 @@ String recordVoicePcmBase64() {
     return "";
   }
 
-  i2s_driver_uninstall(I2S_NUM_0);
+  i2s_driver_uninstall(I2S_MIC_PORT);
   i2s_config_t cfg = {};
   cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   cfg.sample_rate = VOICE_SAMPLE_RATE;
@@ -988,18 +989,24 @@ String recordVoicePcmBase64() {
   pins.data_out_num = I2S_PIN_NO_CHANGE;
   pins.data_in_num = PIN_I2S_DIN;
 
-  if (i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr) != ESP_OK || i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK) {
-    i2s_driver_uninstall(I2S_NUM_0);
+  if (i2s_driver_install(I2S_MIC_PORT, &cfg, 0, nullptr) != ESP_OK) {
+    i2s_driver_uninstall(I2S_MIC_PORT);
     free(pcm);
-    ai_status = "MIC KO";
+    ai_status = "MIC KO: DRIVER";
     return "";
   }
-  i2s_zero_dma_buffer(I2S_NUM_0);
+  if (i2s_set_pin(I2S_MIC_PORT, &pins) != ESP_OK) {
+    i2s_driver_uninstall(I2S_MIC_PORT);
+    free(pcm);
+    ai_status = "MIC KO: PINS";
+    return "";
+  }
+  i2s_zero_dma_buffer(I2S_MIC_PORT);
   uint8_t warmup[1024];
   size_t bytes_read = 0;
   uint32_t warmup_until = millis() + 180;
   while ((int32_t)(millis() - warmup_until) < 0) {
-    i2s_read(I2S_NUM_0, warmup, sizeof(warmup), &bytes_read, pdMS_TO_TICKS(40));
+    i2s_read(I2S_MIC_PORT, warmup, sizeof(warmup), &bytes_read, pdMS_TO_TICKS(40));
     yield();
   }
 
@@ -1007,11 +1014,11 @@ String recordVoicePcmBase64() {
   while (offset < pcm_size) {
     size_t want = min((size_t)1024, pcm_size - offset);
     bytes_read = 0;
-    if (i2s_read(I2S_NUM_0, pcm + offset, want, &bytes_read, pdMS_TO_TICKS(150)) != ESP_OK) break;
+    if (i2s_read(I2S_MIC_PORT, pcm + offset, want, &bytes_read, pdMS_TO_TICKS(150)) != ESP_OK) break;
     offset += bytes_read;
     yield();
   }
-  i2s_driver_uninstall(I2S_NUM_0);
+  i2s_driver_uninstall(I2S_MIC_PORT);
   if (offset < pcm_size) memset(pcm + offset, 0, pcm_size - offset);
 
   String encoded = base64::encode(pcm, pcm_size);
@@ -1044,7 +1051,7 @@ String askGeminiVoice(bool selected_only) {
   String audio_b64 = recordVoicePcmBase64();
   if (!audio_b64.length()) {
     ai_busy = false;
-    return "Micro indisponible.";
+    return ai_status.length() ? ai_status : "Micro indisponible.";
   }
 
   ai_status = "GEMINI...";
