@@ -21,7 +21,7 @@ namespace {
 constexpr int SCREEN = 240;
 constexpr int CX = 120;
 constexpr int CY = 120;
-constexpr int RADAR_R = 110;
+constexpr int RADAR_R = 112;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -187,31 +187,31 @@ void drawButton(int x, int y, int w, int h, const String &label, bool active = f
 }
 
 void drawMapWatermark() {
-  uint16_t land = rgb565(4, 30, 13);
-  uint16_t road = rgb565(14, 82, 25);
-  uint16_t border = rgb565(20, 110, 30);
-  for (int line = -2; line <= 3; ++line) {
+  uint16_t contour = rgb565(3, 24, 12);
+  uint16_t road = rgb565(7, 43, 18);
+  uint16_t text = rgb565(8, 50, 20);
+  for (int line = -3; line <= 3; ++line) {
     int last_x = -1, last_y = -1;
-    for (int t = -RADAR_R; t <= RADAR_R; t += 6) {
+    for (int t = -RADAR_R; t <= RADAR_R; t += 8) {
       float seed = settings.lat * 0.71f + settings.lon * 1.37f + line * 0.9f;
       int x = CX + t;
-      int y = CY + line * 28 + sinf(t * 0.045f + seed) * 18 + cosf(t * 0.017f + seed) * 9;
-      if (hypotf(x - CX, y - CY) > RADAR_R - 3) {
+      int y = CY + line * 25 + sinf(t * 0.04f + seed) * 11 + cosf(t * 0.018f + seed) * 6;
+      if (hypotf(x - CX, y - CY) > RADAR_R - 8) {
         last_x = -1;
         continue;
       }
-      if (last_x >= 0) gfx->drawLine(last_x, last_y, x, y, land);
+      if (last_x >= 0) gfx->drawLine(last_x, last_y, x, y, contour);
       last_x = x;
       last_y = y;
     }
   }
-  for (int line = -1; line <= 2; ++line) {
+  for (int line = -1; line <= 1; ++line) {
     int last_x = -1, last_y = -1;
-    for (int t = -RADAR_R; t <= RADAR_R; t += 5) {
+    for (int t = -RADAR_R; t <= RADAR_R; t += 8) {
       float seed = settings.lon * 0.83f + line * 1.4f;
-      int x = CX + line * 34 + sinf(t * 0.04f + seed) * 15;
-      int y = CY + t;
-      if (hypotf(x - CX, y - CY) > RADAR_R - 3) {
+      int x = CX + t;
+      int y = CY + 30 + line * 26 + sinf(t * 0.028f + seed) * 16;
+      if (hypotf(x - CX, y - CY) > RADAR_R - 10) {
         last_x = -1;
         continue;
       }
@@ -220,47 +220,50 @@ void drawMapWatermark() {
       last_y = y;
     }
   }
-  gfx->drawLine(26, 142, 206, 88, border);
-  gfx->drawLine(38, 154, 218, 100, border);
-  gfx->setTextColor(rgb565(16, 92, 28));
+  gfx->setTextColor(text);
   gfx->setTextSize(1);
-  gfx->setCursor(76, 148);
+  gfx->setCursor(82, 150);
   gfx->print(settings.place.substring(0, 12));
 }
 
 void drawRadarBase() {
-  gfx->fillScreen(COL_BG);
-  gfx->fillCircle(CX, CY, RADAR_R, rgb565(2, 12, 6));
+  gfx->fillScreen(rgb565(0, 2, 2));
+  gfx->fillCircle(CX, CY, 119, rgb565(0, 11, 7));
+  gfx->fillCircle(CX, CY, RADAR_R, rgb565(1, 9, 8));
+  gfx->fillCircle(CX, CY, 87, rgb565(2, 18, 10));
   drawMapWatermark();
-  gfx->drawCircle(CX, CY, RADAR_R, COL_DIM);
-  gfx->drawCircle(CX, CY, 82, rgb565(10, 55, 20));
-  gfx->drawCircle(CX, CY, 55, rgb565(10, 55, 20));
-  gfx->drawCircle(CX, CY, 28, rgb565(10, 55, 20));
+  gfx->drawCircle(CX, CY, 116, rgb565(28, 92, 38));
+  gfx->drawCircle(CX, CY, RADAR_R, rgb565(42, 128, 54));
+  gfx->drawCircle(CX, CY, 84, rgb565(9, 50, 22));
+  gfx->drawCircle(CX, CY, 56, rgb565(9, 50, 22));
+  gfx->drawCircle(CX, CY, 28, rgb565(9, 50, 22));
   for (int deg = 0; deg < 360; deg += 30) {
     float a = deg2rad(deg);
-    gfx->drawLine(CX, CY, CX + cosf(a) * RADAR_R, CY + sinf(a) * RADAR_R, rgb565(7, 42, 18));
+    gfx->drawLine(CX, CY, CX + cosf(a) * RADAR_R, CY + sinf(a) * RADAR_R, rgb565(5, 34, 20));
   }
 
-  drawCentered("18:47", 24, COL_TEXT, 1);
-  drawCentered("AIRPLANES.LIVE", 40, COL_GREEN, 1);
-  drawCentered(String(aircraft_count), 56, COL_GREEN, 4);
-  drawCentered("AVIONS", 91, COL_GREEN, 1);
+  drawCentered("18:47", 22, COL_TEXT, 1);
+  drawCentered("AIRPLANES.LIVE", 38, rgb565(116, 232, 118), 1);
+  drawCentered(String(aircraft_count), 56, COL_GREEN, 3);
+  drawCentered("AVIONS", 86, rgb565(116, 232, 118), 1);
   gfx->setTextColor(rgb565(108, 212, 104));
-  gfx->setCursor(184, 118);
+  gfx->setCursor(170, 116);
   gfx->print(settings.range_km / 2);
-  gfx->setCursor(214, 118);
+  gfx->setCursor(203, 116);
   gfx->print(settings.range_km);
-  gfx->setCursor(214, 132);
+  gfx->setCursor(203, 130);
   gfx->print("KM");
 }
 
 void drawSweep() {
   float head = deg2rad(sweep_deg - 90.0f);
-  for (int i = 8; i >= 1; --i) {
-    float a = deg2rad(sweep_deg - i * 4.0f - 90.0f);
-    gfx->drawLine(CX, CY, CX + cosf(a) * RADAR_R, CY + sinf(a) * RADAR_R, rgb565(0, 20 + i * 8, 12));
+  for (int i = 6; i >= 1; --i) {
+    float a1 = deg2rad(sweep_deg - i * 5.5f - 90.0f);
+    float a2 = deg2rad(sweep_deg - (i - 1) * 5.5f - 90.0f);
+    uint16_t color = rgb565(0, 18 + i * 5, 12 + i * 3);
+    gfx->fillTriangle(CX, CY, CX + cosf(a1) * 102, CY + sinf(a1) * 102, CX + cosf(a2) * 102, CY + sinf(a2) * 102, color);
   }
-  gfx->drawLine(CX, CY, CX + cosf(head) * RADAR_R, CY + sinf(head) * RADAR_R, COL_GREEN);
+  gfx->drawLine(CX, CY, CX + cosf(head) * 108, CY + sinf(head) * 108, rgb565(134, 255, 128));
 }
 
 void drawAircraftSymbol(const Aircraft &a, bool selected) {
@@ -274,6 +277,8 @@ void drawAircraftSymbol(const Aircraft &a, bool selected) {
   int y2 = y + sinf(h + 2.45f) * (scale - 2);
   int x3 = x + cosf(h - 2.45f) * (scale - 2);
   int y3 = y + sinf(h - 2.45f) * (scale - 2);
+  gfx->drawCircle(x, y, selected ? 13 : 10, rgb565(19, 93, 31));
+  gfx->drawCircle(x, y, selected ? 9 : 7, rgb565(30, 145, 42));
   gfx->fillTriangle(x1, y1, x2, y2, x3, y3, selected ? COL_TEXT : COL_GREEN);
   gfx->drawTriangle(x1, y1, x2, y2, x3, y3, COL_GREEN);
 }
