@@ -35,7 +35,7 @@ constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
 constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
 constexpr int VOICE_SAMPLE_RATE = 16000;
-constexpr int VOICE_RECORD_MS = 1400;
+constexpr int VOICE_RECORD_MS = 2200;
 constexpr bool AI_SPEAK_RESPONSE = false;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
@@ -129,6 +129,8 @@ String speech_url;
 String pending_speech_text;
 uint32_t pending_speech_ms = 0;
 bool ai_busy = false;
+int last_mic_peak = 0;
+int last_mic_rms = 0;
 
 uint8_t *allocAudioBuffer(size_t size) {
   if (psramFound()) {
@@ -1033,6 +1035,36 @@ String recordVoicePcmBase64() {
   i2s_driver_uninstall(I2S_MIC_PORT);
   if (offset < pcm_size) memset(pcm + offset, 0, pcm_size - offset);
 
+  int16_t *samples = (int16_t *)pcm;
+  const size_t sample_count = pcm_size / 2;
+  int64_t sum = 0;
+  for (size_t i = 0; i < sample_count; ++i) sum += samples[i];
+  int32_t dc = sample_count ? (int32_t)(sum / (int64_t)sample_count) : 0;
+  int64_t sq = 0;
+  int peak = 0;
+  for (size_t i = 0; i < sample_count; ++i) {
+    int32_t v = (int32_t)samples[i] - dc;
+    int av = abs(v);
+    if (av > peak) peak = av;
+    sq += (int64_t)v * (int64_t)v;
+  }
+  int rms = sample_count ? (int)sqrtf((float)(sq / (int64_t)sample_count)) : 0;
+  last_mic_peak = peak;
+  last_mic_rms = rms;
+  if (peak < 120 || rms < 18) {
+    free(pcm);
+    ai_status = "MIC BAS " + String(rms);
+    return "";
+  }
+  float gain = 1.0f;
+  if (rms > 0 && rms < 2800) gain = min(10.0f, 2800.0f / (float)rms);
+  for (size_t i = 0; i < sample_count; ++i) {
+    int32_t v = (int32_t)(((float)((int32_t)samples[i] - dc)) * gain);
+    if (v > 30000) v = 30000;
+    if (v < -30000) v = -30000;
+    samples[i] = (int16_t)v;
+  }
+
   String encoded = base64::encode(pcm, pcm_size);
   free(pcm);
   if (encoded.length() < b64_size - 8) {
@@ -1060,6 +1092,7 @@ String askGeminiVoice(bool selected_only) {
   ai_answer = "Parlez maintenant...";
   screen_mode = "ai";
   render();
+  delay(350);
   String audio_b64 = recordVoicePcmBase64();
   if (!audio_b64.length()) {
     ai_busy = false;
@@ -1071,7 +1104,8 @@ String askGeminiVoice(bool selected_only) {
   render();
 
   String context = localAI(selected_only);
-  String prompt = "Tu es FlightDesk, assistant vocal autonome en francais. Transcris mentalement la question audio puis reponds naturellement en 1 ou 2 phrases. "
+  String prompt = "Tu es FlightDesk, assistant vocal autonome en francais. Ecoute la question audio et reponds directement en francais, en 1 ou 2 phrases. "
+    "Ne commence pas par bonjour. Si la question est inaudible ou absente, reponds exactement: Je n'ai pas compris, repete. "
     "La question peut etre generale. Utilise ce contexte radar seulement si utile: " + context;
   WiFiClientSecure client;
   client.setInsecure();
