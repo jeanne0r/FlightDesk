@@ -25,6 +25,7 @@ constexpr int CY = 120;
 constexpr int RADAR_R = 112;
 constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
+constexpr bool PHOTO_DOWNLOAD_ENABLED = false;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -281,6 +282,10 @@ void loadPhotoForAircraft(const Aircraft &a) {
   if (photo_hex == a.hex) return;
   clearPhotoCache();
   photo_hex = a.hex;
+  if (!PHOTO_DOWNLOAD_ENABLED) {
+    photo_status = "PHOTO OFF";
+    return;
+  }
   photo_status = "PHOTO...";
   String url = photoUrlFromJson(a.hex);
   uint8_t *jpeg_bytes = nullptr;
@@ -602,12 +607,12 @@ String localAI(bool selected_only) {
 String askGemini(bool selected_only) {
   String key = FLIGHTDESK_GEMINI_API_KEY;
   if (!key.length()) {
-    ai_status = "LOCAL: CLE ABSENTE";
-    return localAI(selected_only);
+    ai_status = "IA KO: CLE";
+    return "Cle Gemini absente dans cette build.";
   }
   if (WiFi.status() != WL_CONNECTED) {
-    ai_status = "LOCAL: WIFI";
-    return localAI(selected_only);
+    ai_status = "IA KO: WIFI";
+    return "Wi-Fi non connecte.";
   }
   String context = localAI(selected_only);
   ai_status = "GEMINI...";
@@ -615,10 +620,11 @@ String askGemini(bool selected_only) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + key;
+  http.setTimeout(6000);
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=" + key;
   if (!http.begin(client, url)) {
-    ai_status = "LOCAL: HTTP";
-    return context;
+    ai_status = "IA KO: HTTP";
+    return "API Gemini inaccessible.";
   }
   http.addHeader("Content-Type", "application/json");
   DynamicJsonDocument body(4096);
@@ -633,15 +639,15 @@ String askGemini(bool selected_only) {
   int code = http.POST(payload);
   if (code != 200) {
     http.end();
-    ai_status = "LOCAL: " + String(code);
-    return context;
+    ai_status = "IA KO: " + String(code);
+    return "Gemini refuse la requete.";
   }
   DynamicJsonDocument answer_doc(8192);
   DeserializationError err = deserializeJson(answer_doc, http.getStream());
   http.end();
   if (err) {
-    ai_status = "LOCAL: JSON";
-    return context;
+    ai_status = "IA KO: JSON";
+    return "Reponse Gemini illisible.";
   }
   const char *text = answer_doc["candidates"][0]["content"]["parts"][0]["text"] | "";
   ai_status = "GEMINI";
