@@ -7,10 +7,10 @@ rond **Waveshare ESP32-S3 Touch LCD 2.8C**. L'objectif : visualiser les avions
 autour de chez soi en temps réel, sélectionner un vol au toucher, écouter des
 annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 
-> État actuel : prototype live utilisable. Le simulateur web rend un radar
-> tactile avec carte, avions Internet, popup avion, route et photo quand elle
-> est disponible. Une preview ESPHome pour **Xiaozhi Ball V2** affiche cette
-> interface sur un écran rond 240 × 240.
+> État actuel : prototype live utilisable. Le simulateur web sert à itérer
+> l'interface, et une cible autonome **Xiaozhi Ball V2** rend maintenant le
+> radar directement sur l'ESP32-S3 sans dépendre de Home Assistant ni de la
+> gateway FlightDesk.
 
 ## Expérience visée
 
@@ -36,15 +36,29 @@ annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 - Boîtier imprimé en 3D.
 - Alimentation USB-C 5 V / 2 A.
 
-## Preview Xiaozhi Ball V2
+## Firmware Autonome Xiaozhi Ball V2
 
-La preview matérielle actuelle est documentée ici :
+Le firmware autonome est dans
+[`firmware/standalone-xiaozhi-v2`](firmware/standalone-xiaozhi-v2).
+
+Il se connecte directement au Wi-Fi, récupère le trafic Internet via
+Airplanes.live, dessine le radar localement sur le GC9A01A, gère le tactile
+CST816 et peut appeler Gemini directement quand une clé est configurée dans
+`include/secrets.h`.
+
+La carte embarquée est pour l'instant un filigrane local stylisé. Les tuiles
+OpenStreetMap et les photos avion restent dans le simulateur web, car leur
+cache/décodage doit être traité proprement sur ESP32 avant d'être fiable.
+
+## Preview ESPHome Xiaozhi Ball V2
+
+L'ancienne preview matérielle ESPHome est documentée ici :
 [docs/XIAOZHI_BALL_V2.md](docs/XIAOZHI_BALL_V2.md).
 
 Elle utilise une config ESPHome publique et nettoyée :
 [`firmware/esphome/xiaozhi-ball-v2`](firmware/esphome/xiaozhi-ball-v2).
 
-Le principe est volontairement simple :
+Le principe historique est volontairement simple :
 
 - le serveur FlightDesk rend `/api/esp32/radar.png` en 240 × 240 ;
 - la Ball télécharge l'image toutes les 30 s ;

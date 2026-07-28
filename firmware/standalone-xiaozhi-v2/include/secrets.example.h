@@ -1,0 +1,6 @@
+#pragma once
+
+#define FLIGHTDESK_WIFI_SSID ""
+#define FLIGHTDESK_WIFI_PASSWORD ""
+#define FLIGHTDESK_GEMINI_API_KEY ""
+

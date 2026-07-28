@@ -4,6 +4,7 @@ build/
 .vscode/
 .DS_Store
 firmware/include/secrets.h
+firmware/standalone-xiaozhi-v2/include/secrets.h
 firmware/esphome/**/secrets.yaml
 simulator/.env
 *.zip
