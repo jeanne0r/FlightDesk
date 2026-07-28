@@ -45,7 +45,9 @@ constexpr uint32_t TRAFFIC_INTERVAL_MS = 30000;
 constexpr uint32_t FRAME_INTERVAL_MS = 50;
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI, GFX_NOT_DEFINED, HSPI);
-Arduino_GFX *gfx = new Arduino_GC9A01(bus, PIN_LCD_RST, 0, true);
+Arduino_GFX *display = new Arduino_GC9A01(bus, PIN_LCD_RST, 0, true);
+Arduino_Canvas *canvas = new Arduino_Canvas(SCREEN, SCREEN, display);
+Arduino_GFX *gfx = canvas;
 
 struct Settings {
   float lat = 46.5197f;
@@ -384,6 +386,7 @@ void render() {
   else if (screen_mode == "ai") drawAI();
   else if (selected_index >= 0) drawPopup();
   else drawButton(88, 198, 64, 26, "MENU", false);
+  gfx->flush();
 }
 
 bool fetchTraffic() {
@@ -606,10 +609,14 @@ void setup() {
   digitalWrite(PIN_TOUCH_RST, HIGH);
   Wire.begin(PIN_I2C_SDA_TOUCH, PIN_I2C_SCL_TOUCH, 50000);
 
-  gfx->begin(40000000);
+  if (!canvas->begin(40000000)) {
+    display->begin(40000000);
+    gfx = display;
+  }
   gfx->fillScreen(COL_BG);
   drawCentered("FLIGHTDESK", 94, COL_GREEN, 2);
   drawCentered("BOOT", 124, COL_TEXT, 1);
+  gfx->flush();
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(FLIGHTDESK_WIFI_SSID, FLIGHTDESK_WIFI_PASSWORD);
