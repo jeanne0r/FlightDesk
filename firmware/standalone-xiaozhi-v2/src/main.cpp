@@ -25,7 +25,7 @@ constexpr int CY = 120;
 constexpr int RADAR_R = 112;
 constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
-constexpr bool PHOTO_DOWNLOAD_ENABLED = false;
+constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -53,6 +53,7 @@ Arduino_DataBus *bus = new Arduino_ESP32SPI(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK,
 Arduino_GFX *display = new Arduino_GC9A01(bus, PIN_LCD_RST, 0, true);
 Arduino_Canvas *canvas = new Arduino_Canvas(SCREEN, SCREEN, display);
 Arduino_GFX *gfx = canvas;
+JPEGDEC photo_jpeg;
 
 struct Settings {
   float lat = 46.5197f;
@@ -93,8 +94,10 @@ uint16_t photo_pixels[PHOTO_W * PHOTO_H];
 String photo_hex;
 String photo_status = "PHOTO";
 bool photo_ready = false;
+bool photo_loading = false;
 int photo_offset_x = 0;
 int photo_offset_y = 0;
+int pending_photo_index = -1;
 
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -201,6 +204,8 @@ void clearPhotoCache() {
   photo_hex = "";
   photo_status = "PHOTO";
   photo_ready = false;
+  photo_loading = false;
+  pending_photo_index = -1;
 }
 
 int jpegPhotoDraw(JPEGDRAW *pDraw) {
@@ -223,6 +228,7 @@ String photoUrlFromJson(const String &hex) {
   HTTPClient http;
   String url = "https://api.planespotters.net/pub/photos/hex/" + hex;
   if (!http.begin(client, url)) return "";
+  http.setTimeout(4000);
   http.setUserAgent("FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk)");
   int code = http.GET();
   if (code != 200) {
@@ -248,6 +254,7 @@ bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
   client.setInsecure();
   HTTPClient http;
   if (!http.begin(client, url)) return false;
+  http.setTimeout(4000);
   http.setUserAgent("FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk)");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = http.GET();
@@ -280,41 +287,68 @@ bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
 
 void loadPhotoForAircraft(const Aircraft &a) {
   if (photo_hex == a.hex) return;
-  clearPhotoCache();
+  photo_hex = "";
+  photo_ready = false;
+  photo_loading = true;
   photo_hex = a.hex;
   if (!PHOTO_DOWNLOAD_ENABLED) {
     photo_status = "PHOTO OFF";
+    photo_loading = false;
     return;
   }
   photo_status = "PHOTO...";
+  yield();
   String url = photoUrlFromJson(a.hex);
   uint8_t *jpeg_bytes = nullptr;
   size_t jpeg_len = 0;
   if (!downloadPhotoBytes(url, jpeg_bytes, jpeg_len)) {
     photo_status = "SANS PHOTO";
+    photo_loading = false;
     return;
   }
 
   for (int i = 0; i < PHOTO_W * PHOTO_H; ++i) photo_pixels[i] = rgb565(1, 9, 5);
-  JPEGDEC jpeg;
   bool ok = false;
-  if (jpeg.openRAM(jpeg_bytes, jpeg_len, jpegPhotoDraw)) {
+  if (photo_jpeg.openRAM(jpeg_bytes, jpeg_len, jpegPhotoDraw)) {
     int scale = JPEG_SCALE_QUARTER;
-    int out_w = jpeg.getWidth() / 4;
-    int out_h = jpeg.getHeight() / 4;
+    int out_w = photo_jpeg.getWidth() / 4;
+    int out_h = photo_jpeg.getHeight() / 4;
     if (out_w > PHOTO_W * 2 || out_h > PHOTO_H * 2) {
       scale = JPEG_SCALE_EIGHTH;
-      out_w = jpeg.getWidth() / 8;
-      out_h = jpeg.getHeight() / 8;
+      out_w = photo_jpeg.getWidth() / 8;
+      out_h = photo_jpeg.getHeight() / 8;
     }
     photo_offset_x = (PHOTO_W - out_w) / 2;
     photo_offset_y = (PHOTO_H - out_h) / 2;
-    ok = jpeg.decode(0, 0, scale);
-    jpeg.close();
+    ok = photo_jpeg.decode(0, 0, scale);
+    photo_jpeg.close();
   }
   free(jpeg_bytes);
   photo_ready = ok;
   photo_status = ok ? "" : "PHOTO KO";
+  photo_loading = false;
+}
+
+void queuePhotoForAircraft(int index) {
+  if (index < 0 || index >= aircraft_count) return;
+  if (photo_hex == aircraft[index].hex) return;
+  pending_photo_index = index;
+  photo_hex = aircraft[index].hex;
+  photo_status = "PHOTO...";
+  photo_ready = false;
+  photo_loading = false;
+}
+
+void servicePendingPhoto() {
+  if (photo_loading || pending_photo_index < 0 || pending_photo_index >= aircraft_count) return;
+  int index = pending_photo_index;
+  pending_photo_index = -1;
+  String hex = aircraft[index].hex;
+  photo_hex = "";
+  loadPhotoForAircraft(aircraft[index]);
+  if (selected_index < 0 || selected_index >= aircraft_count || aircraft[selected_index].hex != hex) {
+    clearPhotoCache();
+  }
 }
 
 void drawMapWatermark() {
@@ -639,7 +673,7 @@ String askGemini(bool selected_only) {
   int code = http.POST(payload);
   if (code != 200) {
     http.end();
-    ai_status = "IA KO: " + String(code);
+    ai_status = code == 400 ? "IA KO: CLE/API" : "IA KO: " + String(code);
     return "Gemini refuse la requete.";
   }
   DynamicJsonDocument answer_doc(8192);
@@ -754,7 +788,7 @@ void handleTouch(int x, int y) {
   }
   if (best >= 0) {
     selected_index = best;
-    loadPhotoForAircraft(aircraft[selected_index]);
+    queuePhotoForAircraft(selected_index);
   }
 }
 
@@ -803,6 +837,9 @@ void loop() {
   if (now - last_touch_ms > 180 && readTouch(tx, ty)) {
     last_touch_ms = now;
     handleTouch(tx, ty);
+  }
+  if (screen_mode == "radar" && selected_index >= 0) {
+    servicePendingPhoto();
   }
   if (now - last_frame_ms > FRAME_INTERVAL_MS) {
     sweep_deg = fmodf(sweep_deg + 4.0f, 360.0f);
