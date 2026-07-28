@@ -35,7 +35,8 @@ constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
 constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
 constexpr int VOICE_SAMPLE_RATE = 8000;
-constexpr int VOICE_RECORD_MS = 1600;
+constexpr int VOICE_RECORD_MS = 1100;
+constexpr bool AI_SPEAK_RESPONSE = false;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -341,6 +342,17 @@ bool initAudioCodec() {
     audio_codec.setMicGain(audio_driver::ES8311MIC_GAIN_30DB);
   }
   return audio_codec_ready;
+}
+
+bool configureAudioCodecRate(audio_driver::samplerate_t rate) {
+  if (!initAudioCodec()) return false;
+  audio_driver::I2SDefinition i2s{};
+  i2s.bits = audio_driver::BIT_LENGTH_16BITS;
+  i2s.rate = rate;
+  i2s.channels = audio_driver::CHANNELS2;
+  i2s.fmt = audio_driver::I2S_NORMAL;
+  i2s.mode = audio_driver::MODE_SLAVE;
+  return audio_codec.configI2S(audio_driver::CODEC_MODE_BOTH, &i2s) == RESULT_OK;
 }
 
 String speechText(const String &text) {
@@ -940,13 +952,14 @@ String askGemini(bool selected_only) {
 
 String recordVoiceWavBase64() {
   stopSpeech();
-  if (!initAudioCodec()) {
+  if (!configureAudioCodecRate(audio_driver::RATE_8K)) {
     ai_status = "MIC KO";
     return "";
   }
   const size_t pcm_size = (VOICE_SAMPLE_RATE * VOICE_RECORD_MS / 1000) * 2;
   const size_t wav_size = 44 + pcm_size;
-  if (ESP.getFreeHeap() < (int)(wav_size + 95000)) {
+  const size_t b64_size = ((wav_size + 2) / 3) * 4;
+  if (ESP.getFreeHeap() < (int)(wav_size + b64_size + 45000)) {
     ai_status = "RAM MIC KO";
     return "";
   }
@@ -1005,6 +1018,10 @@ String recordVoiceWavBase64() {
 
   String encoded = base64::encode(wav, wav_size);
   free(wav);
+  if (encoded.length() < b64_size - 8) {
+    ai_status = "RAM MIC KO";
+    return "";
+  }
   return encoded;
 }
 
@@ -1111,14 +1128,14 @@ void handleTouch(int x, int y) {
     if (x >= 148 && x <= 190 && y >= 154 && y <= 194) {
       ai_answer = askGeminiVoice(true);
       screen_mode = "ai";
-      queueSpeech(ai_answer);
+      if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
       return;
     }
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 45 && x <= 113 && y >= 192 && y <= 230) {
     ai_answer = askGeminiVoice(false);
     screen_mode = "ai";
-    queueSpeech(ai_answer);
+    if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
     return;
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 127 && x <= 195 && y >= 192 && y <= 230) {
@@ -1138,7 +1155,7 @@ void handleTouch(int x, int y) {
     else if (x >= 128 && x <= 212 && y >= 160 && y <= 188) {
       ai_answer = askGeminiVoice(false);
       screen_mode = "ai";
-      queueSpeech(ai_answer);
+      if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
     } else if (x >= 72 && x <= 168 && y >= 84 && y <= 112) screen_mode = "radar";
     return;
   }
