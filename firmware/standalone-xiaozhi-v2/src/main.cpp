@@ -1104,7 +1104,7 @@ String askGeminiVoice(bool selected_only) {
   render();
 
   String context = localAI(selected_only);
-  String prompt = "Tu es FlightDesk, assistant vocal autonome en francais. Ecoute la question audio et reponds directement en francais, en 1 ou 2 phrases. "
+  String prompt = "Tu es FlightDesk, assistant vocal autonome en francais. Ecoute la question audio et reponds directement en francais, en 1 ou 2 phrases courtes, sans Markdown. "
     "Ne commence pas par bonjour. Si la question est inaudible ou absente, reponds exactement: Je n'ai pas compris, repete. "
     "La question peut etre generale. Utilise ce contexte radar seulement si utile: " + context;
   WiFiClientSecure client;
@@ -1127,7 +1127,7 @@ String askGeminiVoice(bool selected_only) {
   payload += jsonQuote(prompt);
   payload += "},{\"inline_data\":{\"mime_type\":\"audio/pcm;rate=16000\",\"data\":\"";
   payload += audio_b64;
-  payload += "\"}}]}],\"generationConfig\":{\"temperature\":0.35,\"maxOutputTokens\":90}}";
+  payload += "\"}}]}],\"generationConfig\":{\"temperature\":0.25,\"maxOutputTokens\":160,\"thinkingConfig\":{\"thinkingBudget\":0}}}";
   audio_b64 = "";
   int code = http.POST(payload);
   payload = "";
