@@ -242,10 +242,6 @@ void drawRadarBase() {
     gfx->drawLine(CX, CY, CX + cosf(a) * RADAR_R, CY + sinf(a) * RADAR_R, rgb565(5, 34, 20));
   }
 
-  drawCentered("18:47", 22, COL_TEXT, 1);
-  drawCentered("AIRPLANES.LIVE", 38, rgb565(116, 232, 118), 1);
-  drawCentered(String(aircraft_count), 56, COL_GREEN, 3);
-  drawCentered("AVIONS", 86, rgb565(116, 232, 118), 1);
   gfx->setTextColor(rgb565(108, 212, 104));
   gfx->setCursor(170, 116);
   gfx->print(settings.range_km / 2);
