@@ -221,15 +221,25 @@ int jpegPhotoDraw(JPEGDRAW *pDraw) {
   return 1;
 }
 
-String photoUrlFromJson(const String &hex) {
-  if (WiFi.status() != WL_CONNECTED || !hex.length()) return "";
+String proxiedPhotoUrl(const String &src) {
+  if (!src.length()) return "";
+  String clean = src;
+  clean.replace("https://", "");
+  clean.replace("http://", "");
+  return "https://images.weserv.nl/?url=" + clean + "&w=66&h=44&fit=cover&output=jpg&q=70";
+}
+
+String photoUrlFromApiPath(const String &path) {
+  if (WiFi.status() != WL_CONNECTED || !path.length()) return "";
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  String url = "https://api.planespotters.net/pub/photos/hex/" + hex;
+  String url = "https://api.planespotters.net/pub/photos/" + path;
   if (!http.begin(client, url)) return "";
   http.setTimeout(4000);
   http.setUserAgent("FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk)");
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Accept-Encoding", "identity");
   int code = http.GET();
   if (code != 200) {
     http.end();
@@ -243,10 +253,18 @@ String photoUrlFromJson(const String &hex) {
   const char *thumb = photo["thumbnail"]["src"] | "";
   const char *large = photo["thumbnail_large"]["src"] | "";
   String src = thumb[0] ? String(thumb) : String(large);
-  if (!src.length()) return "";
-  src.replace("https://", "");
-  src.replace("http://", "");
-  return "https://images.weserv.nl/?url=" + src + "&w=66&h=44&fit=cover&output=jpg&q=70";
+  return proxiedPhotoUrl(src);
+}
+
+String photoUrlFromAircraft(const Aircraft &a) {
+  if (a.registration.length()) {
+    String reg = a.registration;
+    reg.trim();
+    reg.replace(" ", "");
+    String by_reg = photoUrlFromApiPath("reg/" + reg);
+    if (by_reg.length()) return by_reg;
+  }
+  return photoUrlFromApiPath("hex/" + a.hex);
 }
 
 bool downloadPhotoBytes(const String &url, uint8_t *&buffer, size_t &length) {
@@ -319,7 +337,7 @@ void loadPhotoForAircraft(const Aircraft &a) {
   }
   photo_status = "PHOTO...";
   yield();
-  String url = photoUrlFromJson(a.hex);
+  String url = photoUrlFromAircraft(a);
   if (!url.length()) {
     photo_status = "NO PHOTO";
     photo_loading = false;
@@ -677,11 +695,14 @@ String askGemini(bool selected_only) {
   HTTPClient http;
   http.setTimeout(6000);
   String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=" + key;
+  http.useHTTP10(true);
   if (!http.begin(client, url)) {
     ai_status = "IA KO: HTTP";
     return "API Gemini inaccessible.";
   }
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Accept-Encoding", "identity");
   DynamicJsonDocument body(4096);
   JsonArray contents = body["contents"].to<JsonArray>();
   JsonObject content = contents.add<JsonObject>();
@@ -697,9 +718,10 @@ String askGemini(bool selected_only) {
     ai_status = code == 400 ? "IA KO: CLE/API" : "IA KO: " + String(code);
     return "Gemini refuse la requete.";
   }
-  DynamicJsonDocument answer_doc(8192);
-  DeserializationError err = deserializeJson(answer_doc, http.getStream());
+  String response = http.getString();
   http.end();
+  DynamicJsonDocument answer_doc(16384);
+  DeserializationError err = deserializeJson(answer_doc, response);
   if (err) {
     ai_status = "IA KO: JSON";
     return "Reponse Gemini illisible.";
