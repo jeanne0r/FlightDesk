@@ -6,11 +6,14 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
+#include <base64.h>
+#include <driver/i2s.h>
 #include <Arduino_GFX_Library.h>
 #include <AudioFileSourceBuffer.h>
 #include <AudioFileSourceHTTPStream.h>
 #include <AudioGeneratorMP3.h>
 #include <AudioOutputI2S.h>
+#include <Codecs/es8311/ES8311.h>
 #include <math.h>
 #include <new>
 
@@ -31,6 +34,8 @@ constexpr int RADAR_R = 112;
 constexpr int PHOTO_W = 66;
 constexpr int PHOTO_H = 44;
 constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
+constexpr int VOICE_SAMPLE_RATE = 8000;
+constexpr int VOICE_RECORD_MS = 1600;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -46,8 +51,12 @@ constexpr int PIN_LCD_MOSI = 2;
 constexpr int PIN_LCD_BL = 42;
 constexpr int PIN_I2S_LRCLK = 45;
 constexpr int PIN_I2S_BCLK = 9;
+constexpr int PIN_I2S_MCLK = 16;
+constexpr int PIN_I2S_DIN = 10;
 constexpr int PIN_I2S_DOUT = 8;
 constexpr int PIN_SPEAKER_ENABLE = 46;
+constexpr int PIN_I2C_SDA_AUDIO = 15;
+constexpr int PIN_I2C_SCL_AUDIO = 14;
 
 constexpr uint16_t COL_BG = 0x0000;
 constexpr uint16_t COL_PANEL = 0x0204;
@@ -67,6 +76,9 @@ AudioGeneratorMP3 *speech_mp3 = nullptr;
 AudioFileSourceHTTPStream *speech_file = nullptr;
 AudioFileSourceBuffer *speech_buffer = nullptr;
 AudioOutputI2S *speech_out = nullptr;
+TwoWire audio_wire = TwoWire(1);
+audio_driver::ES8311 audio_codec;
+bool audio_codec_ready = false;
 
 struct Settings {
   float lat = 46.5197f;
@@ -114,6 +126,29 @@ int pending_photo_index = -1;
 String speech_url;
 String pending_speech_text;
 uint32_t pending_speech_ms = 0;
+bool ai_busy = false;
+
+void writeWavHeader(uint8_t *wav, uint32_t pcm_size) {
+  uint32_t file_size = 36 + pcm_size;
+  uint32_t byte_rate = VOICE_SAMPLE_RATE * 2;
+  uint16_t block_align = 2;
+  uint16_t bits_per_sample = 16;
+  memcpy(wav, "RIFF", 4);
+  memcpy(wav + 4, &file_size, 4);
+  memcpy(wav + 8, "WAVEfmt ", 8);
+  uint32_t fmt_size = 16;
+  uint16_t audio_format = 1;
+  uint16_t channels = 1;
+  memcpy(wav + 16, &fmt_size, 4);
+  memcpy(wav + 20, &audio_format, 2);
+  memcpy(wav + 22, &channels, 2);
+  memcpy(wav + 24, &VOICE_SAMPLE_RATE, 4);
+  memcpy(wav + 28, &byte_rate, 4);
+  memcpy(wav + 32, &block_align, 2);
+  memcpy(wav + 34, &bits_per_sample, 2);
+  memcpy(wav + 36, "data", 4);
+  memcpy(wav + 40, &pcm_size, 4);
+}
 
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -138,6 +173,24 @@ String urlEncode(const String &text) {
       encoded += hex[c & 0x0F];
     }
   }
+  return encoded;
+}
+
+String jsonQuote(const String &text) {
+  String encoded = "\"";
+  encoded.reserve(text.length() + 8);
+  for (size_t i = 0; i < text.length(); ++i) {
+    char c = text[i];
+    if (c == '"' || c == '\\') {
+      encoded += '\\';
+      encoded += c;
+    } else if (c == '\n' || c == '\r' || (uint8_t)c < 0x20) {
+      encoded += ' ';
+    } else {
+      encoded += c;
+    }
+  }
+  encoded += "\"";
   return encoded;
 }
 
@@ -263,6 +316,33 @@ void stopSpeech() {
   digitalWrite(PIN_SPEAKER_ENABLE, LOW);
 }
 
+bool initAudioCodec() {
+  if (audio_codec_ready) return true;
+  audio_wire.begin(PIN_I2C_SDA_AUDIO, PIN_I2C_SCL_AUDIO, 100000);
+  audio_codec.setWire(&audio_wire);
+  audio_codec.setAddress(audio_driver::ES8311::ES8311_ADDR);
+  audio_codec.setMclkSrc(audio_driver::ES8311::FROM_MCLK_PIN);
+
+  audio_driver::codec_config_t cfg{};
+  cfg.input_device = audio_driver::ADC_INPUT_LINE1;
+  cfg.output_device = audio_driver::DAC_OUTPUT_ALL;
+  cfg.i2s.bits = audio_driver::BIT_LENGTH_16BITS;
+  cfg.i2s.rate = audio_driver::RATE_24K;
+  cfg.i2s.channels = audio_driver::CHANNELS2;
+  cfg.i2s.fmt = audio_driver::I2S_NORMAL;
+  cfg.i2s.mode = audio_driver::MODE_SLAVE;
+
+  audio_codec_ready = audio_codec.init(&cfg) == RESULT_OK &&
+    audio_codec.configI2S(audio_driver::CODEC_MODE_BOTH, &cfg.i2s) == RESULT_OK &&
+    audio_codec.ctrlStateActive(audio_driver::CODEC_MODE_BOTH, true) == RESULT_OK;
+  if (audio_codec_ready) {
+    audio_codec.setVoiceVolume(85);
+    audio_codec.setVoiceMute(false);
+    audio_codec.setMicGain(audio_driver::ES8311MIC_GAIN_30DB);
+  }
+  return audio_codec_ready;
+}
+
 String speechText(const String &text) {
   String clean = text;
   clean.replace("\n", " ");
@@ -278,6 +358,10 @@ void startSpeech(const String &text) {
   if (WiFi.status() != WL_CONNECTED) return;
   String clean = speechText(text);
   if (!clean.length()) return;
+  if (!initAudioCodec()) {
+    ai_status = "VOCAL KO";
+    return;
+  }
   if (ESP.getFreeHeap() < 90000) {
     ai_status = "VOCAL OFF";
     return;
@@ -297,7 +381,9 @@ void startSpeech(const String &text) {
     ai_status = "VOCAL OFF";
     return;
   }
-  speech_out->SetPinout(PIN_I2S_BCLK, PIN_I2S_LRCLK, PIN_I2S_DOUT);
+  speech_out->SetPinout(PIN_I2S_BCLK, PIN_I2S_LRCLK, PIN_I2S_DOUT, PIN_I2S_MCLK);
+  speech_out->SetMclk(true);
+  speech_out->SetOutputModeMono(true);
   speech_out->SetGain(0.35f);
   digitalWrite(PIN_SPEAKER_ENABLE, HIGH);
   if (!speech_mp3->begin(speech_buffer, speech_out)) {
@@ -852,6 +938,153 @@ String askGemini(bool selected_only) {
   return String(text);
 }
 
+String recordVoiceWavBase64() {
+  stopSpeech();
+  if (!initAudioCodec()) {
+    ai_status = "MIC KO";
+    return "";
+  }
+  const size_t pcm_size = (VOICE_SAMPLE_RATE * VOICE_RECORD_MS / 1000) * 2;
+  const size_t wav_size = 44 + pcm_size;
+  if (ESP.getFreeHeap() < (int)(wav_size + 95000)) {
+    ai_status = "RAM MIC KO";
+    return "";
+  }
+  uint8_t *wav = (uint8_t *)malloc(wav_size);
+  if (!wav) {
+    ai_status = "RAM MIC KO";
+    return "";
+  }
+  writeWavHeader(wav, pcm_size);
+
+  i2s_driver_uninstall(I2S_NUM_0);
+  i2s_config_t cfg = {};
+  cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
+  cfg.sample_rate = VOICE_SAMPLE_RATE;
+  cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+  cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+  cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+  cfg.dma_buf_count = 4;
+  cfg.dma_buf_len = 256;
+  cfg.use_apll = false;
+  cfg.tx_desc_auto_clear = false;
+  cfg.fixed_mclk = 0;
+  i2s_pin_config_t pins = {};
+  pins.mck_io_num = PIN_I2S_MCLK;
+  pins.bck_io_num = PIN_I2S_BCLK;
+  pins.ws_io_num = PIN_I2S_LRCLK;
+  pins.data_out_num = I2S_PIN_NO_CHANGE;
+  pins.data_in_num = PIN_I2S_DIN;
+
+  if (i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr) != ESP_OK || i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK) {
+    i2s_driver_uninstall(I2S_NUM_0);
+    free(wav);
+    ai_status = "MIC KO";
+    return "";
+  }
+  i2s_zero_dma_buffer(I2S_NUM_0);
+  uint8_t warmup[1024];
+  size_t bytes_read = 0;
+  uint32_t warmup_until = millis() + 180;
+  while ((int32_t)(millis() - warmup_until) < 0) {
+    i2s_read(I2S_NUM_0, warmup, sizeof(warmup), &bytes_read, pdMS_TO_TICKS(40));
+    yield();
+  }
+
+  size_t offset = 44;
+  while (offset < wav_size) {
+    size_t want = min((size_t)1024, wav_size - offset);
+    bytes_read = 0;
+    if (i2s_read(I2S_NUM_0, wav + offset, want, &bytes_read, pdMS_TO_TICKS(150)) != ESP_OK) break;
+    offset += bytes_read;
+    yield();
+  }
+  i2s_driver_uninstall(I2S_NUM_0);
+  if (offset < wav_size) memset(wav + offset, 0, wav_size - offset);
+
+  String encoded = base64::encode(wav, wav_size);
+  free(wav);
+  return encoded;
+}
+
+String askGeminiVoice(bool selected_only) {
+  if (ai_busy) return "IA deja en cours.";
+  ai_busy = true;
+  String key = FLIGHTDESK_GEMINI_API_KEY;
+  if (!key.length()) {
+    ai_status = "IA KO: CLE";
+    ai_busy = false;
+    return "Cle Gemini absente dans cette build.";
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    ai_status = "IA KO: WIFI";
+    ai_busy = false;
+    return "Wi-Fi non connecte.";
+  }
+  ai_status = "ECOUTE";
+  ai_answer = "Parlez maintenant...";
+  screen_mode = "ai";
+  render();
+  String audio_b64 = recordVoiceWavBase64();
+  if (!audio_b64.length()) {
+    ai_busy = false;
+    return "Micro indisponible.";
+  }
+
+  ai_status = "GEMINI...";
+  ai_answer = "Question envoyee...";
+  render();
+
+  String context = localAI(selected_only);
+  String prompt = "Tu es FlightDesk, assistant vocal autonome en francais. Transcris mentalement la question audio puis reponds naturellement en 1 ou 2 phrases. "
+    "La question peut etre generale. Utilise ce contexte radar seulement si utile: " + context;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(12000);
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key;
+  http.useHTTP10(true);
+  if (!http.begin(client, url)) {
+    ai_status = "IA KO: HTTP";
+    ai_busy = false;
+    return "API Gemini inaccessible.";
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Accept-Encoding", "identity");
+  String payload;
+  payload.reserve(audio_b64.length() + prompt.length() + 520);
+  payload = "{\"contents\":[{\"parts\":[{\"text\":";
+  payload += jsonQuote(prompt);
+  payload += "},{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"";
+  payload += audio_b64;
+  payload += "\"}}]}],\"generationConfig\":{\"temperature\":0.35,\"maxOutputTokens\":90}}";
+  audio_b64 = "";
+  int code = http.POST(payload);
+  payload = "";
+  if (code != 200) {
+    http.end();
+    ai_status = "IA KO: " + String(code);
+    ai_busy = false;
+    return "Gemini refuse l'audio.";
+  }
+  String response = http.getString();
+  http.end();
+  DynamicJsonDocument answer_doc(24576);
+  DeserializationError err = deserializeJson(answer_doc, response);
+  if (err) {
+    ai_status = "IA KO: JSON";
+    ai_busy = false;
+    return "Reponse Gemini audio illisible.";
+  }
+  const char *text = answer_doc["candidates"][0]["content"]["parts"][0]["text"] | "";
+  ai_status = "GEMINI";
+  ai_busy = false;
+  if (!text || !strlen(text)) return "Je n'ai pas compris la reponse.";
+  return String(text);
+}
+
 bool readTouch(int &x, int &y) {
   if (digitalRead(PIN_TOUCH_INT) == HIGH) return false;
   Wire.beginTransmission(CST816_ADDR);
@@ -876,14 +1109,14 @@ void handleTouch(int x, int y) {
       return;
     }
     if (x >= 148 && x <= 190 && y >= 154 && y <= 194) {
-      ai_answer = askGemini(true);
+      ai_answer = askGeminiVoice(true);
       screen_mode = "ai";
       queueSpeech(ai_answer);
       return;
     }
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 45 && x <= 113 && y >= 192 && y <= 230) {
-    ai_answer = askGemini(false);
+    ai_answer = askGeminiVoice(false);
     screen_mode = "ai";
     queueSpeech(ai_answer);
     return;
@@ -903,7 +1136,7 @@ void handleTouch(int x, int y) {
       screen_mode = "radar";
     }
     else if (x >= 128 && x <= 212 && y >= 160 && y <= 188) {
-      ai_answer = askGemini(false);
+      ai_answer = askGeminiVoice(false);
       screen_mode = "ai";
       queueSpeech(ai_answer);
     } else if (x >= 72 && x <= 168 && y >= 84 && y <= 112) screen_mode = "radar";
