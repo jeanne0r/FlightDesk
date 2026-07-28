@@ -7,6 +7,10 @@
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
+#include <AudioFileSourceBuffer.h>
+#include <AudioFileSourceHTTPStream.h>
+#include <AudioGeneratorMP3.h>
+#include <AudioOutputI2S.h>
 #include <math.h>
 
 #if __has_include("secrets.h")
@@ -39,6 +43,10 @@ constexpr int PIN_LCD_RST = 38;
 constexpr int PIN_LCD_SCK = 4;
 constexpr int PIN_LCD_MOSI = 2;
 constexpr int PIN_LCD_BL = 42;
+constexpr int PIN_I2S_LRCLK = 45;
+constexpr int PIN_I2S_BCLK = 9;
+constexpr int PIN_I2S_DOUT = 8;
+constexpr int PIN_SPEAKER_ENABLE = 46;
 
 constexpr uint16_t COL_BG = 0x0000;
 constexpr uint16_t COL_PANEL = 0x0204;
@@ -54,6 +62,10 @@ Arduino_GFX *display = new Arduino_GC9A01(bus, PIN_LCD_RST, 0, true);
 Arduino_Canvas *canvas = new Arduino_Canvas(SCREEN, SCREEN, display);
 Arduino_GFX *gfx = canvas;
 JPEGDEC photo_jpeg;
+AudioGeneratorMP3 *speech_mp3 = nullptr;
+AudioFileSourceHTTPStream *speech_file = nullptr;
+AudioFileSourceBuffer *speech_buffer = nullptr;
+AudioOutputI2S *speech_out = nullptr;
 
 struct Settings {
   float lat = 46.5197f;
@@ -98,6 +110,7 @@ bool photo_loading = false;
 int photo_offset_x = 0;
 int photo_offset_y = 0;
 int pending_photo_index = -1;
+String speech_url;
 
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -105,6 +118,24 @@ uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
 
 float deg2rad(float value) {
   return value * PI / 180.0f;
+}
+
+String urlEncode(const String &text) {
+  String encoded;
+  const char *hex = "0123456789ABCDEF";
+  for (size_t i = 0; i < text.length(); ++i) {
+    uint8_t c = (uint8_t)text[i];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+      encoded += (char)c;
+    } else if (c == ' ') {
+      encoded += '+';
+    } else {
+      encoded += '%';
+      encoded += hex[c >> 4];
+      encoded += hex[c & 0x0F];
+    }
+  }
+  return encoded;
 }
 
 float haversine(float lat1, float lon1, float lat2, float lon2) {
@@ -206,6 +237,63 @@ void clearPhotoCache() {
   photo_ready = false;
   photo_loading = false;
   pending_photo_index = -1;
+}
+
+void stopSpeech() {
+  if (speech_mp3) {
+    if (speech_mp3->isRunning()) speech_mp3->stop();
+    delete speech_mp3;
+    speech_mp3 = nullptr;
+  }
+  if (speech_buffer) {
+    delete speech_buffer;
+    speech_buffer = nullptr;
+  }
+  if (speech_file) {
+    delete speech_file;
+    speech_file = nullptr;
+  }
+  if (speech_out) {
+    delete speech_out;
+    speech_out = nullptr;
+  }
+  digitalWrite(PIN_SPEAKER_ENABLE, LOW);
+}
+
+String speechText(const String &text) {
+  String clean = text;
+  clean.replace("\n", " ");
+  clean.replace("°", " degres");
+  clean.replace("km/h", " kilometres heure");
+  clean.replace(" km", " kilometres");
+  clean.trim();
+  if (clean.length() > 180) clean = clean.substring(0, 180);
+  return clean;
+}
+
+void startSpeech(const String &text) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  String clean = speechText(text);
+  if (!clean.length()) return;
+  stopSpeech();
+  digitalWrite(PIN_SPEAKER_ENABLE, HIGH);
+  speech_url = "http://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=fr&q=" + urlEncode(clean);
+  speech_file = new AudioFileSourceHTTPStream(speech_url.c_str());
+  speech_buffer = new AudioFileSourceBuffer(speech_file, 4096);
+  speech_out = new AudioOutputI2S(0, 1);
+  speech_out->SetPinout(PIN_I2S_BCLK, PIN_I2S_LRCLK, PIN_I2S_DOUT);
+  speech_out->SetGain(0.45f);
+  speech_mp3 = new AudioGeneratorMP3();
+  if (!speech_mp3->begin(speech_buffer, speech_out)) stopSpeech();
+}
+
+void serviceSpeech() {
+  if (!speech_mp3) return;
+  if (speech_mp3->isRunning()) {
+    if (!speech_mp3->loop()) stopSpeech();
+  } else {
+    stopSpeech();
+  }
 }
 
 int jpegPhotoDraw(JPEGDRAW *pDraw) {
@@ -756,12 +844,14 @@ void handleTouch(int x, int y) {
     }
     if (x >= 148 && x <= 190 && y >= 154 && y <= 194) {
       ai_answer = askGemini(true);
+      startSpeech(ai_answer);
       screen_mode = "ai";
       return;
     }
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 45 && x <= 113 && y >= 192 && y <= 230) {
     ai_answer = askGemini(false);
+    startSpeech(ai_answer);
     screen_mode = "ai";
     return;
   }
@@ -781,6 +871,7 @@ void handleTouch(int x, int y) {
     }
     else if (x >= 128 && x <= 212 && y >= 160 && y <= 188) {
       ai_answer = askGemini(false);
+      startSpeech(ai_answer);
       screen_mode = "ai";
     } else if (x >= 72 && x <= 168 && y >= 84 && y <= 112) screen_mode = "radar";
     return;
@@ -841,6 +932,8 @@ void setup() {
   Serial.begin(115200);
   pinMode(PIN_LCD_BL, OUTPUT);
   digitalWrite(PIN_LCD_BL, LOW);
+  pinMode(PIN_SPEAKER_ENABLE, OUTPUT);
+  digitalWrite(PIN_SPEAKER_ENABLE, LOW);
   pinMode(PIN_TOUCH_INT, INPUT);
   pinMode(PIN_TOUCH_RST, OUTPUT);
   digitalWrite(PIN_TOUCH_RST, LOW);
@@ -871,6 +964,7 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+  serviceSpeech();
   uint32_t now = millis();
   if (now - last_traffic_ms > TRAFFIC_INTERVAL_MS) {
     fetchTraffic();
