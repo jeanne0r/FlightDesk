@@ -28,7 +28,7 @@ annonces vocales et poser des questions à un assistant vocal Gemini intégré.
 ## Matériel prévu
 
 - Xiaozhi Ball V2 pour la preview ronde ESPHome actuelle.
-- Waveshare ESP32-S3 Touch LCD 2.8C.
+- Waveshare ESP32-S3 Touch LCD 2.8C, SKU 29086, 480 × 480.
 - Microphone I2S INMP441.
 - Amplificateur audio I2S MAX98357A.
 - Haut-parleur 40 mm, 4 Ω / 3 W.
@@ -49,6 +49,16 @@ CST816 et peut appeler Gemini directement quand une clé est configurée dans
 La carte embarquée est pour l'instant un filigrane local stylisé. Les tuiles
 OpenStreetMap et les photos avion restent dans le simulateur web, car leur
 cache/décodage doit être traité proprement sur ESP32 avant d'être fiable.
+
+## Firmware Waveshare ESP32-S3 Touch LCD 2.8C
+
+Le port pour l'écran final reçu est isolé dans
+[`firmware/standalone-waveshare-2.8c`](firmware/standalone-waveshare-2.8c).
+
+La première cible est un bring-up matériel : USB série, Wi-Fi, profil
+Flash/PSRAM et scan I2C sur les broches Waveshare documentées. L'écran 480 ×
+480 et le tactile seront portés depuis le demo officiel Waveshare avant d'y
+remettre le radar FlightDesk complet.
 
 ## Preview ESPHome Xiaozhi Ball V2
 
