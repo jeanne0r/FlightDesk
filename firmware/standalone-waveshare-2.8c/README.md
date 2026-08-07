@@ -60,5 +60,7 @@ The monitor should show detected I2C devices, Wi-Fi status and free heap/PSRAM.
 - Import the official Waveshare 2.8C display initialization.
 - Add the 480 x 480 FlightDesk radar renderer.
 - Add capacitive touch mapping and calibration.
-- Re-enable Airplanes.live, Gemini and audio after the screen/touch base is
-  stable.
+- Integrate the final audio hardware: INMP441 microphone, MAX98357A amplifier
+  and 40 mm speaker.
+- Add Gemini as an Internet service, not as a local model. The ESP32-S3 handles
+  the UI, audio capture/playback and HTTPS requests; Gemini runs in the cloud.

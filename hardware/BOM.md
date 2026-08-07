@@ -17,3 +17,9 @@
 - interrupteur de coupure audio matériel.
 
 Le son sera activable, réglable et coupable depuis le menu.
+
+## Répartition des rôles
+
+- Xiaozhi Ball V2 : cible simple de preview, sans IA ni audio final.
+- Waveshare ESP32-S3 Touch LCD 2.8C : cible finale avec micro, ampli,
+  haut-parleur, tactile, radar autonome et Gemini via Internet.

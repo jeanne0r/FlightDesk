@@ -46,6 +46,10 @@ Airplanes.live, dessine le radar localement sur le GC9A01A, gère le tactile
 CST816 et peut appeler Gemini directement quand une clé est configurée dans
 `include/secrets.h`.
 
+Cette cible reste désormais une preview simple. Le travail IA/audio final est
+réservé au Waveshare 2.8C reçu, avec micro INMP441, ampli MAX98357A et
+haut-parleur externe.
+
 La carte embarquée est pour l'instant un filigrane local stylisé. Les tuiles
 OpenStreetMap et les photos avion restent dans le simulateur web, car leur
 cache/décodage doit être traité proprement sur ESP32 avant d'être fiable.
