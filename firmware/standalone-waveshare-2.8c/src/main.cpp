@@ -397,12 +397,50 @@ void putPixel(int x, int y, uint16_t color) {
   frame[y * kWidth + x] = color;
 }
 
+uint16_t blend565(uint16_t dst, uint16_t src, uint8_t alpha) {
+  const uint8_t inv = 255 - alpha;
+  const uint8_t dr = ((dst >> 11) & 0x1F) << 3;
+  const uint8_t dg = ((dst >> 5) & 0x3F) << 2;
+  const uint8_t db = (dst & 0x1F) << 3;
+  const uint8_t sr = ((src >> 11) & 0x1F) << 3;
+  const uint8_t sg = ((src >> 5) & 0x3F) << 2;
+  const uint8_t sb = (src & 0x1F) << 3;
+  return rgb565((dr * inv + sr * alpha) / 255,
+                (dg * inv + sg * alpha) / 255,
+                (db * inv + sb * alpha) / 255);
+}
+
+void blendPixel(int x, int y, uint16_t color, uint8_t alpha) {
+  if (x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
+  const int index = y * kWidth + x;
+  frame[index] = blend565(frame[index], color, alpha);
+}
+
 void drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
   int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
   int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
   int err = dx + dy;
   while (true) {
     putPixel(x0, y0, color);
+    if (x0 == x1 && y0 == y1) break;
+    int e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x0 += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+void blendLine(int x0, int y0, int x1, int y1, uint16_t color, uint8_t alpha) {
+  int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  while (true) {
+    blendPixel(x0, y0, color, alpha);
     if (x0 == x1 && y0 == y1) break;
     int e2 = 2 * err;
     if (e2 >= dy) {
@@ -463,6 +501,15 @@ void fillCircle(int cx, int cy, int r, uint16_t color) {
     const int span = static_cast<int>(sqrtf(r * r - y * y));
     for (int x = -span; x <= span; ++x) {
       putPixel(cx + x, cy + y, color);
+    }
+  }
+}
+
+void blendFillCircle(int cx, int cy, int r, uint16_t color, uint8_t alpha) {
+  for (int y = -r; y <= r; ++y) {
+    const int span = static_cast<int>(sqrtf(r * r - y * y));
+    for (int x = -span; x <= span; ++x) {
+      blendPixel(cx + x, cy + y, color, alpha);
     }
   }
 }
@@ -585,42 +632,44 @@ void drawPolyline(const int points[][2], int count, uint16_t color, int thicknes
   }
 }
 
-void drawMapWatermark(uint16_t land, uint16_t forest, uint16_t road, uint16_t border, uint16_t label) {
+void drawBlendPolyline(const int points[][2], int count, uint16_t color, uint8_t alpha) {
+  for (int i = 0; i < count - 1; ++i) {
+    blendLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1], color, alpha);
+  }
+}
+
+void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t border, uint16_t label) {
   const int forests[][3] = {
-      {100, 128, 58}, {156, 170, 72}, {328, 132, 54}, {370, 322, 74},
-      {142, 350, 66}, {266, 286, 90}, {66, 252, 48}};
+      {104, 118, 70}, {164, 166, 82}, {320, 122, 68}, {382, 326, 84},
+      {142, 356, 78}, {264, 292, 96}, {72, 248, 56}};
   for (const auto& area : forests) {
-    fillCircle(area[0], area[1], area[2], forest);
+    blendFillCircle(area[0], area[1], area[2], forest, 42);
   }
 
-  const int lake[][2] = {{236, 314}, {284, 326}, {332, 348}, {388, 386}, {432, 420}};
-  drawPolyline(lake, 5, rgb565(3, 34, 30), 1);
-  const int ridge[][2] = {{42, 332}, {94, 292}, {134, 250}, {172, 220}, {214, 190}, {274, 164}, {352, 138}, {430, 108}};
-  drawPolyline(ridge, 8, border, 1);
-  const int borderLine[][2] = {{52, 152}, {108, 174}, {154, 198}, {206, 212}, {258, 228}, {320, 260}, {406, 304}};
-  drawPolyline(borderLine, 7, border, 1);
+  const int contour[][4] = {
+      {38, 148, 126, 104}, {126, 104, 250, 124}, {250, 124, 412, 86},
+      {54, 320, 142, 274}, {142, 274, 246, 286}, {246, 286, 404, 340},
+      {118, 394, 198, 344}, {198, 344, 338, 386}, {72, 198, 176, 220},
+      {176, 220, 250, 180}, {250, 180, 360, 206}, {328, 366, 424, 286}};
+  for (const auto& l : contour) {
+    blendLine(l[0], l[1], l[2], l[3], terrain, 50);
+  }
 
   const int roads[][4] = {
-      {36, 276, 178, 244}, {178, 244, 322, 264}, {322, 264, 438, 230},
-      {84, 390, 188, 342}, {188, 342, 298, 374}, {298, 374, 424, 336},
-      {72, 206, 168, 224}, {168, 224, 252, 184}, {252, 184, 388, 204},
-      {312, 86, 344, 208}, {356, 232, 430, 188}};
+      {32, 284, 174, 246}, {174, 246, 322, 264}, {322, 264, 434, 230},
+      {86, 390, 188, 342}, {188, 342, 298, 374}, {298, 374, 420, 336},
+      {312, 88, 344, 208}, {356, 232, 430, 188}};
   for (const auto& l : roads) {
-    drawLine(l[0], l[1], l[2], l[3], road);
+    blendLine(l[0], l[1], l[2], l[3], road, 70);
   }
 
-  const int minor[][4] = {
-      {64, 118, 154, 96}, {154, 96, 278, 120}, {278, 120, 404, 84},
-      {92, 330, 188, 286}, {188, 286, 268, 302}, {268, 302, 386, 358},
-      {122, 410, 210, 362}, {210, 362, 332, 398}, {340, 296, 430, 284}};
-  for (const auto& l : minor) {
-    drawLine(l[0], l[1], l[2], l[3], land);
-  }
+  const int borderLine[][2] = {{42, 330}, {94, 292}, {134, 250}, {174, 220}, {214, 192}, {274, 166}, {352, 140}, {430, 112}};
+  drawBlendPolyline(borderLine, 8, border, 70);
+  const int lake[][2] = {{238, 314}, {286, 326}, {334, 348}, {388, 384}, {430, 418}};
+  drawBlendPolyline(lake, 5, rgb565(4, 42, 38), 75);
 
-  drawText(158, 238, "GIMEL", label, 1);
-  drawText(304, 326, "GLAND", label, 1);
-  drawText(104, 182, "JURA", label, 1);
-  drawText(354, 260, "A1", label, 1);
+  drawText(154, 248, "GIMEL", label, 1);
+  drawText(306, 326, "GLAND", label, 1);
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
@@ -684,9 +733,8 @@ void drawRadarFrame() {
   const uint16_t green = rgb565(118, 252, 112);
   const uint16_t softGreen = rgb565(86, 214, 96);
   const uint16_t glow = rgb565(42, 150, 62);
-  const uint16_t mid = rgb565(22, 104, 42);
   const uint16_t dim = rgb565(8, 46, 26);
-  const uint16_t map = rgb565(4, 26, 17);
+  const uint16_t map = rgb565(5, 34, 22);
   const uint16_t panel = rgb565(1, 13, 12);
   const uint16_t text = rgb565(225, 244, 228);
 
@@ -708,7 +756,7 @@ void drawRadarFrame() {
   fillCircle(cx, cy, r - 8, rgb565(1, 13, 10));
   fillCircle(cx, cy, 168, rgb565(1, 17, 11));
   fillCircle(cx, cy, 98, rgb565(3, 22, 14));
-  drawMapWatermark(map, rgb565(3, 26, 16), rgb565(10, 54, 30), rgb565(14, 64, 34), rgb565(20, 76, 38));
+  drawMapWatermark(map, rgb565(4, 34, 20), rgb565(18, 84, 44), rgb565(28, 104, 52), rgb565(42, 116, 58));
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
@@ -748,6 +796,7 @@ void drawRadarFrame() {
       drawCircle(x, y, 24, green);
       drawThickLine(cx, cy, x, y, glow);
     }
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 30 : 22, green, planeIndex == selectedPlane ? 82 : 56);
     fillCircle(x, y, planeIndex == selectedPlane ? 14 : 10, rgb565(0, 28, 16));
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(2, 18, 10));
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(106, 232, 100));
@@ -756,10 +805,7 @@ void drawRadarFrame() {
     ++planeIndex;
   }
 
-  drawTextCentered(cx, 50, "18:47", text, 3);
-  drawTextCentered(cx, 88, "AIRPLANES.LIVE", softGreen, 2);
-  drawTextCentered(cx, 124, "7", green, 6);
-  drawTextCentered(cx, 176, "AVIONS", green, 3);
+  drawTextCentered(cx, 48, "7 AVIONS", green, 3);
   drawText(332, 236, "20", softGreen, 2);
   drawText(386, 236, "50", softGreen, 2);
   drawText(388, 262, "KM", softGreen, 2);
