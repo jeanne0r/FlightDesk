@@ -2,7 +2,6 @@
 #include <HTTPClient.h>
 #include <PNGdec.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <Wire.h>
 
 #include "driver/spi_master.h"
@@ -473,6 +472,14 @@ void blendLine(int x0, int y0, int x1, int y1, uint16_t color, uint8_t alpha) {
   }
 }
 
+void blendThickLine(int x0, int y0, int x1, int y1, uint16_t color, uint8_t alpha) {
+  blendLine(x0, y0, x1, y1, color, alpha);
+  blendLine(x0 + 1, y0, x1 + 1, y1, color, alpha);
+  blendLine(x0 - 1, y0, x1 - 1, y1, color, alpha);
+  blendLine(x0, y0 + 1, x1, y1 + 1, color, alpha);
+  blendLine(x0, y0 - 1, x1, y1 - 1, color, alpha);
+}
+
 void drawThickLine(int x0, int y0, int x1, int y1, uint16_t color) {
   drawLine(x0, y0, x1, y1, color);
   drawLine(x0 + 1, y0, x1 + 1, y1, color);
@@ -591,12 +598,12 @@ bool fetchTilePng(int z, int x, int y, int screenX, int screenY) {
   if (y < 0 || y >= tileCount) return false;
 
   char url[96];
-  snprintf(url, sizeof(url), "https://tile.openstreetmap.org/%d/%d/%d.png", z, x, y);
-  WiFiClientSecure client;
-  client.setInsecure();
+  snprintf(url, sizeof(url), "http://tile.openstreetmap.org/%d/%d/%d.png", z, x, y);
+  WiFiClient client;
   HTTPClient http;
   http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(8000);
   if (!http.begin(client, url)) {
     return false;
   }
@@ -608,10 +615,13 @@ bool fetchTilePng(int z, int x, int y, int screenX, int screenY) {
   }
 
   WiFiClient* stream = http.getStreamPtr();
+  const int contentLength = http.getSize();
   size_t total = 0;
-  while (http.connected() && total < tileBufferSize) {
+  const uint32_t started = millis();
+  while (total < tileBufferSize && millis() - started < 12000) {
     const size_t available = stream->available();
     if (available == 0) {
+      if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
       if (total > 0 && !stream->connected()) break;
       delay(1);
       continue;
@@ -621,6 +631,7 @@ bool fetchTilePng(int z, int x, int y, int screenX, int screenY) {
     const int read = stream->readBytes(tileBuffer + total, chunk);
     if (read <= 0) break;
     total += read;
+    if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
   }
   http.end();
   if (total < 64 || total >= tileBufferSize) {
@@ -864,17 +875,17 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
   const char* labels[] = {"RADAR", "RECH", "FAV", "REGL", "IA"};
-  constexpr int width = 58;
-  constexpr int height = 30;
+  constexpr int width = 50;
+  constexpr int height = 28;
   constexpr int gap = 6;
-  constexpr int startX = 79;
-  constexpr int y = 374;
+  constexpr int startX = 101;
+  constexpr int y = 356;
   for (int i = 0; i < 5; ++i) {
     const int x = startX + i * (width + gap);
     const bool active = i == 0;
-    fillRoundRect(x, y, width, height, 13, active ? rgb565(3, 25, 18) : panel);
-    drawRoundRect(x, y, width, height, 13, active ? green : rgb565(28, 74, 46));
-    drawTextCentered(x + width / 2, y + 11, labels[i], active ? green : rgb565(190, 215, 198), 1);
+    fillRoundRect(x, y, width, height, 12, active ? rgb565(4, 28, 18) : panel);
+    drawRoundRect(x, y, width, height, 12, active ? green : rgb565(20, 58, 38));
+    drawTextCentered(x + width / 2, y + 10, labels[i], active ? green : rgb565(178, 206, 188), 1);
   }
 }
 
@@ -909,7 +920,7 @@ void drawRadarFrame() {
   const uint16_t green = rgb565(132, 255, 116);
   const uint16_t softGreen = rgb565(76, 214, 114);
   const uint16_t glow = rgb565(42, 150, 62);
-  const uint16_t dim = rgb565(8, 54, 34);
+  const uint16_t dim = rgb565(5, 38, 30);
   const uint16_t map = rgb565(12, 66, 42);
   const uint16_t panel = rgb565(1, 11, 10);
   const uint16_t text = rgb565(225, 244, 228);
@@ -929,9 +940,9 @@ void drawRadarFrame() {
     }
   }
 
-  fillCircle(cx, cy, r - 8, rgb565(2, 14, 14));
-  blendFillCircle(cx, cy, 182, rgb565(7, 50, 30), 70);
-  blendFillCircle(cx, cy, 112, rgb565(10, 66, 38), 54);
+  fillCircle(cx, cy, r - 8, rgb565(1, 11, 12));
+  blendFillCircle(cx, cy, 194, rgb565(6, 43, 28), 50);
+  blendFillCircle(cx, cy, 118, rgb565(8, 56, 34), 38);
   if (mapReady && mapFrame) {
     for (int y = 0; y < kHeight; ++y) {
       for (int x = 0; x < kWidth; ++x) {
@@ -939,18 +950,18 @@ void drawRadarFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 152);
+          frame[index] = blend565(frame[index], mapFrame[index], 220);
         }
       }
     }
   } else {
-    drawMapWatermark(map, rgb565(6, 54, 32), rgb565(28, 112, 66), rgb565(34, 132, 78), rgb565(76, 150, 82));
+    drawMapWatermark(map, rgb565(6, 54, 32), rgb565(28, 112, 66), rgb565(34, 132, 78), rgb565(66, 138, 74));
   }
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
   drawCircle(cx, cy, r - 5, dim);
-  drawCircle(cx, cy, r - 12, rgb565(2, 22, 18));
+  drawCircle(cx, cy, r - 12, rgb565(1, 18, 16));
 
   for (int ring = r / 4; ring <= r; ring += r / 4) {
     drawCircle(cx, cy, ring, dim);
@@ -959,17 +970,17 @@ void drawRadarFrame() {
   for (int a = 0; a < 360; a += 30) {
     const float rad = a * DEG_TO_RAD;
     blendLine(cx + cosf(rad) * 16, cy + sinf(rad) * 16,
-              cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 70);
+              cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 42);
   }
 
-  fillWedge(cx, cy, r - 10, sweepDeg - 52.0f, sweepDeg - 34.0f, rgb565(3, 34, 31));
-  fillWedge(cx, cy, r - 10, sweepDeg - 34.0f, sweepDeg - 16.0f, rgb565(5, 56, 45));
-  fillWedge(cx, cy, r - 10, sweepDeg - 16.0f, sweepDeg, rgb565(10, 88, 62));
+  fillWedge(cx, cy, r - 12, sweepDeg - 45.0f, sweepDeg - 30.0f, rgb565(2, 30, 29));
+  fillWedge(cx, cy, r - 12, sweepDeg - 30.0f, sweepDeg - 15.0f, rgb565(4, 52, 45));
+  fillWedge(cx, cy, r - 12, sweepDeg - 15.0f, sweepDeg, rgb565(10, 82, 62));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
-  drawThickLine(cx, cy,
-                cx + static_cast<int>(cosf(sweepRad) * (r - 6)),
-                cy + static_cast<int>(sinf(sweepRad) * (r - 6)),
-                green);
+  blendThickLine(cx, cy,
+                 cx + static_cast<int>(cosf(sweepRad) * (r - 8)),
+                 cy + static_cast<int>(sinf(sweepRad) * (r - 8)),
+                 green, 205);
 
   int planeIndex = 0;
   for (const auto& p : kPlanes) {
@@ -984,27 +995,27 @@ void drawRadarFrame() {
     const int rightY = y + static_cast<int>(sinf(ar - 2.55f) * 10);
     if (planeIndex == selectedPlane) {
       drawCircle(x, y, 24, green);
-      drawThickLine(cx, cy, x, y, glow);
+      blendThickLine(cx, cy, x, y, glow, 140);
     }
-    blendFillCircle(x, y, planeIndex == selectedPlane ? 24 : 17, green, planeIndex == selectedPlane ? 32 : 18);
-    fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(1, 12, 8));
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 20 : 13, green, planeIndex == selectedPlane ? 28 : 12);
+    fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(0, 8, 6));
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(205, 255, 202));
     drawLine(noseX, noseY, leftX, leftY, green);
     drawLine(noseX, noseY, rightX, rightY, green);
     ++planeIndex;
   }
 
-  drawTextCentered(cx, 48, "18:47", text, 2);
-  drawTextCentered(cx, 76, "LIVE OPENSKY", softGreen, 1);
-  drawTextCentered(cx, 98, "7", green, 4);
-  drawTextCentered(cx, 136, "AVIONS", green, 2);
-  drawText(cx + r * 42 / 100, cy + 4, "20", softGreen, 2);
-  drawText(cx + r * 72 / 100, cy + 4, "50", softGreen, 2);
-  drawText(cx + r * 75 / 100, cy + 30, "KM", softGreen, 2);
+  drawTextCentered(cx, 48, "18:47", text, 1);
+  drawTextCentered(cx, 67, "LIVE OPENSKY", softGreen, 1);
+  drawTextCentered(cx, 88, "7", green, 3);
+  drawTextCentered(cx, 120, "AVIONS", green, 2);
+  drawText(cx + r * 41 / 100, cy + 3, "20", softGreen, 1);
+  drawText(cx + r * 72 / 100, cy + 3, "50", softGreen, 1);
+  drawText(cx + r * 73 / 100, cy + 20, "KM", softGreen, 1);
 
   fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
-  drawCircle(cx, cy, 18, dim);
+  drawCircle(cx, cy, 16, dim);
 
   if (menuOpen) {
     drawMenuPanel(green, text, panel);
@@ -1251,12 +1262,12 @@ void handleTap(uint16_t x, uint16_t y) {
     return;
   }
 
-  if (inRect(x, y, 267, 360, 76, 58)) {
+  if (inRect(x, y, 263, 344, 72, 56)) {
     menuOpen = true;
     return;
   }
-  if (inRect(x, y, 73, 360, 76, 58) || inRect(x, y, 137, 360, 76, 58) ||
-      inRect(x, y, 201, 360, 76, 58) || inRect(x, y, 331, 360, 76, 58)) {
+  if (inRect(x, y, 93, 344, 72, 56) || inRect(x, y, 149, 344, 72, 56) ||
+      inRect(x, y, 205, 344, 72, 56) || inRect(x, y, 319, 344, 72, 56)) {
     menuOpen = false;
     selectedPlane = -1;
     return;
