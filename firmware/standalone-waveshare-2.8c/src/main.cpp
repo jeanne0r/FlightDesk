@@ -594,9 +594,9 @@ void drawMapWatermark(uint16_t land, uint16_t forest, uint16_t road, uint16_t bo
   }
 
   const int lake[][2] = {{236, 314}, {284, 326}, {332, 348}, {388, 386}, {432, 420}};
-  drawPolyline(lake, 5, rgb565(5, 44, 42), 2);
+  drawPolyline(lake, 5, rgb565(3, 34, 30), 1);
   const int ridge[][2] = {{42, 332}, {94, 292}, {134, 250}, {172, 220}, {214, 190}, {274, 164}, {352, 138}, {430, 108}};
-  drawPolyline(ridge, 8, border, 2);
+  drawPolyline(ridge, 8, border, 1);
   const int borderLine[][2] = {{52, 152}, {108, 174}, {154, 198}, {206, 212}, {258, 228}, {320, 260}, {406, 304}};
   drawPolyline(borderLine, 7, border, 1);
 
@@ -607,7 +607,6 @@ void drawMapWatermark(uint16_t land, uint16_t forest, uint16_t road, uint16_t bo
       {312, 86, 344, 208}, {356, 232, 430, 188}};
   for (const auto& l : roads) {
     drawLine(l[0], l[1], l[2], l[3], road);
-    drawLine(l[0], l[1] + 1, l[2], l[3] + 1, road);
   }
 
   const int minor[][4] = {
@@ -618,10 +617,10 @@ void drawMapWatermark(uint16_t land, uint16_t forest, uint16_t road, uint16_t bo
     drawLine(l[0], l[1], l[2], l[3], land);
   }
 
-  drawText(182, 220, "GIMEL", label, 2);
-  drawText(300, 316, "GLAND", label, 1);
-  drawText(94, 180, "JURA", label, 1);
-  drawText(350, 252, "A1", label, 1);
+  drawText(158, 238, "GIMEL", label, 1);
+  drawText(304, 326, "GLAND", label, 1);
+  drawText(104, 182, "JURA", label, 1);
+  drawText(354, 260, "A1", label, 1);
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
@@ -687,7 +686,7 @@ void drawRadarFrame() {
   const uint16_t glow = rgb565(42, 150, 62);
   const uint16_t mid = rgb565(22, 104, 42);
   const uint16_t dim = rgb565(8, 46, 26);
-  const uint16_t map = rgb565(8, 38, 26);
+  const uint16_t map = rgb565(4, 26, 17);
   const uint16_t panel = rgb565(1, 13, 12);
   const uint16_t text = rgb565(225, 244, 228);
 
@@ -709,7 +708,7 @@ void drawRadarFrame() {
   fillCircle(cx, cy, r - 8, rgb565(1, 13, 10));
   fillCircle(cx, cy, 168, rgb565(1, 17, 11));
   fillCircle(cx, cy, 98, rgb565(3, 22, 14));
-  drawMapWatermark(map, rgb565(4, 30, 20), rgb565(18, 78, 42), rgb565(26, 104, 48), rgb565(40, 110, 52));
+  drawMapWatermark(map, rgb565(3, 26, 16), rgb565(10, 54, 30), rgb565(14, 64, 34), rgb565(20, 76, 38));
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
