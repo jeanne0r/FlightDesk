@@ -285,6 +285,20 @@ void fillCircle(int cx, int cy, int r, uint16_t color) {
   }
 }
 
+void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_t color) {
+  constexpr float stepDeg = 3.0f;
+  for (float a = startDeg; a < endDeg; a += stepDeg) {
+    const float a0 = a * DEG_TO_RAD;
+    const float a1 = min(a + stepDeg, endDeg) * DEG_TO_RAD;
+    fillTriangle(cx, cy,
+                 cx + static_cast<int>(cosf(a0) * radius),
+                 cy + static_cast<int>(sinf(a0) * radius),
+                 cx + static_cast<int>(cosf(a1) * radius),
+                 cy + static_cast<int>(sinf(a1) * radius),
+                 color);
+  }
+}
+
 void drawRadarFrame() {
   if (!frame || !lcdPanel) return;
 
@@ -292,8 +306,8 @@ void drawRadarFrame() {
   constexpr int cy = 240;
   constexpr int r = 226;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(95, 245, 105);
-  const uint16_t glow = rgb565(48, 180, 72);
+  const uint16_t green = rgb565(92, 235, 102);
+  const uint16_t glow = rgb565(36, 150, 66);
   const uint16_t mid = rgb565(22, 120, 48);
   const uint16_t dim = rgb565(8, 54, 28);
   const uint16_t map = rgb565(5, 36, 24);
@@ -307,8 +321,8 @@ void drawRadarFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 145 * 145 ? 18 : 12;
-        frame[y * kWidth + x] = rgb565(0, shade, 10);
+        const uint8_t shade = d2 < 145 * 145 ? 14 : 10;
+        frame[y * kWidth + x] = rgb565(0, shade, 11);
       }
     }
   }
@@ -336,12 +350,14 @@ void drawRadarFrame() {
     drawLine(l[0], l[1] + 1, l[2], l[3] + 1, map);
   }
 
-  for (int i = 16; i >= 0; --i) {
-    const float trail = (sweepDeg - i * 3.0f) * DEG_TO_RAD;
-    const int reach = r - 18 - i;
-    const uint16_t color = i == 0 ? green : (i < 7 ? glow : mid);
-    drawThickLine(cx, cy, cx + cosf(trail) * reach, cy + sinf(trail) * reach, color);
-  }
+  fillWedge(cx, cy, r - 20, sweepDeg - 30.0f, sweepDeg - 17.0f, rgb565(0, 44, 34));
+  fillWedge(cx, cy, r - 20, sweepDeg - 17.0f, sweepDeg - 7.0f, rgb565(0, 62, 42));
+  fillWedge(cx, cy, r - 20, sweepDeg - 7.0f, sweepDeg, rgb565(0, 86, 56));
+  const float sweepRad = sweepDeg * DEG_TO_RAD;
+  drawThickLine(cx, cy,
+                cx + static_cast<int>(cosf(sweepRad) * (r - 18)),
+                cy + static_cast<int>(sinf(sweepRad) * (r - 18)),
+                green);
 
   const int planes[][3] = {
       {122, 116, 32}, {342, 132, 120}, {190, 310, 205}, {318, 332, 292},
