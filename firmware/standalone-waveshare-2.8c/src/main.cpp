@@ -252,8 +252,9 @@ bool readTouch(uint16_t& x, uint16_t& y) {
     return false;
   }
   touchI2cWrite(kGt911ReadXyReg, 0);
-  x = static_cast<uint16_t>(data[1] << 8 | data[0]);
-  y = static_cast<uint16_t>(data[3] << 8 | data[2]);
+  // Starting at 0x814F: track id, X low, X high, Y low, Y high, size low, size high.
+  x = static_cast<uint16_t>(data[2] << 8 | data[1]);
+  y = static_cast<uint16_t>(data[4] << 8 | data[3]);
   if (x >= kWidth) x = kWidth - 1;
   if (y >= kHeight) y = kHeight - 1;
   return true;
