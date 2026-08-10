@@ -2,6 +2,8 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <PNGdec.h>
+#include <Preferences.h>
+#include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
@@ -62,6 +64,8 @@ uint16_t* mapFrame = nullptr;
 uint8_t* tileBuffer = nullptr;
 size_t tileBufferSize = 0;
 PNG png;
+Preferences prefs;
+WebServer setupServer(80);
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
@@ -90,6 +94,10 @@ bool mapReady = false;
 bool mapFetchInProgress = false;
 uint32_t lastTrafficFetchMs = 0;
 bool trafficLive = false;
+bool setupPortalActive = false;
+char storedSsid[33] = "";
+char storedPassword[65] = "";
+uint32_t wifiReconnectAtMs = 0;
 
 constexpr double kHomeLat = 46.5096;
 constexpr double kHomeLon = 6.3077;
@@ -149,6 +157,8 @@ enum class AppView : uint8_t {
 };
 
 AppView appView = AppView::Radar;
+
+const char* activeWifiSsid();
 
 void pcaWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kTca9554Address);
@@ -1168,17 +1178,26 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   drawRoundRect(72, 96, 336, 276, 22, rgb565(68, 190, 92));
   if (appView == AppView::Settings) {
     drawTextCentered(240, 120, "REGLAGES", green, 2);
-    drawText(108, 154, "NPA", green, 2);
-    drawText(210, 154, "1188", text, 2);
-    drawText(108, 188, "RAYON", green, 2);
-    drawText(210, 188, "50 KM", text, 2);
-    drawText(108, 222, "WIFI", green, 2);
-    drawText(210, 222, WiFi.status() == WL_CONNECTED ? "OK" : "KO", text, 2);
-    drawText(108, 256, "SOURCE", green, 2);
-    drawText(210, 256, trafficLive ? "LIVE" : "SIM", text, 2);
-    fillRoundRect(144, 304, 192, 42, 14, rgb565(2, 20, 15));
-    drawRoundRect(144, 304, 192, 42, 14, rgb565(70, 220, 104));
-    drawTextCentered(240, 317, "FERMER", text, 2);
+    drawText(104, 150, "NPA", green, 2);
+    drawText(214, 150, "1188", text, 2);
+    drawText(104, 178, "RAYON", green, 2);
+    drawText(214, 178, "50 KM", text, 2);
+    drawText(104, 206, "WIFI", green, 2);
+    drawText(214, 206, WiFi.status() == WL_CONNECTED ? "OK" : "KO", text, 2);
+    drawText(104, 234, "SOURCE", green, 2);
+    drawText(214, 234, trafficLive ? "LIVE" : "SIM", text, 2);
+    fillRoundRect(126, 260, 228, 34, 12, rgb565(2, 20, 15));
+    drawRoundRect(126, 260, 228, 34, 12, rgb565(70, 220, 104));
+    drawTextCentered(240, 271, "WIFI SETUP", text, 1);
+    if (setupPortalActive) {
+      drawTextCentered(240, 302, "AP FLIGHTDESK-SETUP", green, 1);
+      drawTextCentered(240, 318, "192.168.4.1", text, 1);
+    } else {
+      drawTextCentered(240, 310, activeWifiSsid(), text, 1);
+    }
+    fillRoundRect(144, 334, 192, 30, 12, rgb565(2, 20, 15));
+    drawRoundRect(144, 334, 192, 30, 12, rgb565(70, 220, 104));
+    drawTextCentered(240, 345, "FERMER", text, 1);
     return;
   }
 
@@ -1506,17 +1525,112 @@ void printHeader() {
   Serial.println("========================================");
 }
 
+void loadWifiSettings() {
+  storedSsid[0] = '\0';
+  storedPassword[0] = '\0';
+  if (!prefs.begin("flightdesk", true)) {
+    Serial.println("[WIFI] NVS lecture KO");
+    return;
+  }
+  const String ssid = prefs.getString("ssid", "");
+  const String password = prefs.getString("pass", "");
+  prefs.end();
+  copyClean(storedSsid, sizeof(storedSsid), ssid.c_str(), "");
+  copyClean(storedPassword, sizeof(storedPassword), password.c_str(), "");
+}
+
+const char* activeWifiSsid() {
+  return strlen(storedSsid) ? storedSsid : FLIGHTDESK_WIFI_SSID;
+}
+
+const char* activeWifiPassword() {
+  return strlen(storedSsid) ? storedPassword : FLIGHTDESK_WIFI_PASSWORD;
+}
+
+String htmlEscape(const char* value) {
+  String out;
+  while (value && *value) {
+    switch (*value) {
+      case '&': out += F("&amp;"); break;
+      case '<': out += F("&lt;"); break;
+      case '>': out += F("&gt;"); break;
+      case '"': out += F("&quot;"); break;
+      default: out += *value; break;
+    }
+    ++value;
+  }
+  return out;
+}
+
+void handleSetupRoot() {
+  String html;
+  html.reserve(1800);
+  html += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>FlightDesk Wi-Fi</title><style>");
+  html += F("body{margin:0;background:#050b08;color:#eaffea;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}");
+  html += F("main{max-width:420px;margin:0 auto;padding:28px}h1{color:#86ff78;font-size:28px;margin:0 0 8px}");
+  html += F("p{color:#9fb7a4;line-height:1.4}label{display:block;margin:18px 0 8px;color:#86ff78;font-weight:700}");
+  html += F("input{box-sizing:border-box;width:100%;padding:14px;border-radius:10px;border:1px solid #245a38;background:#07130d;color:#fff;font-size:18px}");
+  html += F("button{width:100%;margin-top:22px;padding:14px;border:0;border-radius:12px;background:#58f07b;color:#031009;font-size:18px;font-weight:800}");
+  html += F(".card{border:1px solid #234d34;border-radius:16px;padding:18px;background:#09130f}");
+  html += F("</style></head><body><main><h1>FlightDesk</h1><p>Configuration Wi-Fi locale stockee dans l'ESP32.</p>");
+  html += F("<form class='card' method='post' action='/save'><label>Nom du Wi-Fi</label><input name='ssid' maxlength='32' value='");
+  html += htmlEscape(activeWifiSsid());
+  html += F("' autofocus><label>Mot de passe</label><input name='pass' type='password' maxlength='64' placeholder='laisser vide pour garder'>");
+  html += F("<button type='submit'>Enregistrer</button></form>");
+  html += F("<p>Apres sauvegarde, FlightDesk reconnecte le radar avec ces identifiants.</p></main></body></html>");
+  setupServer.send(200, "text/html", html);
+}
+
+void handleSetupSave() {
+  const String ssid = setupServer.arg("ssid");
+  const String password = setupServer.arg("pass");
+  const String savedPassword = password.length() ? password : String(storedPassword);
+  if (!prefs.begin("flightdesk", false)) {
+    setupServer.send(500, "text/plain", "NVS KO");
+    return;
+  }
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", savedPassword);
+  prefs.end();
+  copyClean(storedSsid, sizeof(storedSsid), ssid.c_str(), "");
+  copyClean(storedPassword, sizeof(storedPassword), savedPassword.c_str(), "");
+  wifiReconnectAtMs = millis() + 800;
+  setupServer.send(200, "text/html",
+                   "<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                   "<body style='background:#050b08;color:#eaffea;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:28px'>"
+                   "<h1 style='color:#86ff78'>Wi-Fi enregistre</h1>"
+                   "<p>FlightDesk tente la reconnexion. Vous pouvez revenir au radar.</p></body>");
+  Serial.printf("[WIFI] Nouveau SSID stocke: %s\n", storedSsid);
+}
+
+void startWifiPortal() {
+  if (setupPortalActive) return;
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("FlightDesk-Setup");
+  setupServer.on("/", HTTP_GET, handleSetupRoot);
+  setupServer.on("/save", HTTP_POST, handleSetupSave);
+  setupServer.onNotFound(handleSetupRoot);
+  setupServer.begin();
+  setupPortalActive = true;
+  Serial.printf("[WIFI] Portail actif: FlightDesk-Setup http://%s\n",
+                WiFi.softAPIP().toString().c_str());
+}
+
 void connectWifi() {
-  if (strlen(FLIGHTDESK_WIFI_SSID) == 0) {
-    Serial.println("[WIFI] Aucun SSID configure dans include/secrets.h");
+  const char* ssid = activeWifiSsid();
+  const char* password = activeWifiPassword();
+  if (strlen(ssid) == 0) {
+    Serial.println("[WIFI] Aucun SSID configure; portail setup actif");
+    startWifiPortal();
     return;
   }
 
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(setupPortalActive ? WIFI_AP_STA : WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.begin(FLIGHTDESK_WIFI_SSID, FLIGHTDESK_WIFI_PASSWORD);
+  WiFi.begin(ssid, password);
 
-  Serial.printf("[WIFI] Connexion a %s", FLIGHTDESK_WIFI_SSID);
+  Serial.printf("[WIFI] Connexion a %s", ssid);
   const uint32_t started = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - started < 15000) {
     delay(250);
@@ -1530,6 +1644,7 @@ void connectWifi() {
                   WiFi.RSSI());
   } else {
     Serial.printf("[WIFI] KO status=%d\n", WiFi.status());
+    startWifiPortal();
   }
 }
 
@@ -1603,7 +1718,17 @@ void handleTap(uint16_t x, uint16_t y) {
   Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
 
   if (appView != AppView::Radar) {
-    if (inRect(x, y, 130, 292, 220, 68) || inRect(x, y, 88, 348, 304, 56)) {
+    if (appView == AppView::Settings && inRect(x, y, 116, 248, 248, 58)) {
+      startWifiPortal();
+      return;
+    }
+    if (appView == AppView::Settings && inRect(x, y, 118, 324, 244, 58)) {
+      appView = AppView::Radar;
+      selectedPlane = -1;
+      return;
+    }
+    if (appView != AppView::Settings &&
+        (inRect(x, y, 130, 292, 220, 68) || inRect(x, y, 88, 348, 304, 56))) {
       appView = AppView::Radar;
       selectedPlane = -1;
     }
@@ -1679,6 +1804,7 @@ void setup() {
   initDisplay();
   initTouch();
   initImu();
+  loadWifiSettings();
   connectWifi();
   bootMs = millis();
   printStatus();
@@ -1686,6 +1812,19 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+
+  if (setupPortalActive) {
+    setupServer.handleClient();
+  }
+
+  if (wifiReconnectAtMs && now >= wifiReconnectAtMs) {
+    wifiReconnectAtMs = 0;
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.disconnect(false);
+    delay(50);
+    WiFi.begin(activeWifiSsid(), activeWifiPassword());
+    Serial.printf("[WIFI] Reconnexion avec SSID stocke: %s\n", activeWifiSsid());
+  }
 
   if (now - lastStatusMs >= 5000) {
     lastStatusMs = now;
