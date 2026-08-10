@@ -89,6 +89,9 @@ bool mapFetchInProgress = false;
 constexpr double kHomeLat = 46.5096;
 constexpr double kHomeLon = 6.3077;
 constexpr int kRangeKm = 50;
+constexpr int kRadarCx = 240;
+constexpr int kRadarCy = 240;
+constexpr int kRadarRadius = 218;
 int pngTileScreenX = 0;
 int pngTileScreenY = 0;
 
@@ -540,13 +543,13 @@ uint16_t radarTint(uint16_t rgb) {
   const uint8_t g = ((rgb >> 5) & 0x3F) << 2;
   const uint8_t b = (rgb & 0x1F) << 3;
   const uint8_t lum = static_cast<uint8_t>((r * 30 + g * 59 + b * 11) / 100);
-  return rgb565(2 + lum / 18, 18 + lum / 4, 12 + lum / 8);
+  return rgb565(1 + lum / 24, 13 + lum / 5, 12 + lum / 7);
 }
 
 void clearMapFrame() {
   if (!mapFrame) return;
   for (int i = 0; i < kWidth * kHeight; ++i) {
-    mapFrame[i] = rgb565(1, 13, 10);
+    mapFrame[i] = rgb565(1, 10, 10);
   }
 }
 
@@ -644,14 +647,11 @@ void fetchMapTiles() {
   if (!mapFrame || !tileBuffer || WiFi.status() != WL_CONNECTED || mapFetchInProgress) return;
   mapFetchInProgress = true;
   clearMapFrame();
-  constexpr int cx = 240;
-  constexpr int cy = 240;
-  constexpr int radius = 198;
-  const int zoom = zoomForRange(kHomeLat, kRangeKm, radius);
+  const int zoom = zoomForRange(kHomeLat, kRangeKm, kRadarRadius);
   const double centerX = lonToPixelX(kHomeLon, zoom);
   const double centerY = latToPixelY(kHomeLat, zoom);
-  const double topLeftX = centerX - cx;
-  const double topLeftY = centerY - cy;
+  const double topLeftX = centerX - kRadarCx;
+  const double topLeftY = centerY - kRadarCy;
   const int minTileX = floor(topLeftX / 256.0);
   const int minTileY = floor(topLeftY / 256.0);
   const int maxTileX = floor((topLeftX + kWidth) / 256.0);
@@ -800,25 +800,36 @@ void drawBlendPolyline(const int points[][2], int count, uint16_t color, uint8_t
 }
 
 void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t border, uint16_t label) {
+  blendFillCircle(122, 126, 58, forest, 24);
+  blendFillCircle(314, 116, 72, forest, 18);
+  blendFillCircle(112, 330, 88, forest, 18);
+  blendFillCircle(344, 318, 88, forest, 21);
+
   const int contours[][4] = {
-      {46, 138, 140, 100}, {140, 100, 260, 122}, {260, 122, 410, 90},
-      {54, 316, 148, 278}, {148, 278, 252, 288}, {252, 288, 410, 338},
-      {108, 390, 204, 346}, {204, 346, 340, 382}, {72, 202, 176, 222},
-      {176, 222, 250, 184}, {250, 184, 362, 204}, {328, 360, 422, 284}};
+      {18, 124, 116, 100}, {116, 100, 250, 112}, {250, 112, 452, 76},
+      {22, 318, 122, 282}, {122, 282, 244, 292}, {244, 292, 458, 342},
+      {78, 404, 188, 350}, {188, 350, 342, 386}, {28, 206, 160, 224},
+      {160, 224, 242, 184}, {242, 184, 398, 204}, {318, 368, 456, 282},
+      {64, 150, 168, 188}, {168, 188, 264, 170}, {264, 170, 406, 150},
+      {42, 248, 150, 252}, {150, 252, 250, 230}, {250, 230, 422, 252}};
   for (const auto& l : contours) {
-    blendLine(l[0], l[1], l[2], l[3], terrain, 42);
+    blendLine(l[0], l[1], l[2], l[3], terrain, 40);
   }
 
   const int roads[][4] = {
-      {36, 286, 176, 246}, {176, 246, 318, 262}, {318, 262, 430, 230},
-      {90, 388, 190, 342}, {190, 342, 300, 372}, {300, 372, 414, 338}};
+      {24, 286, 174, 246}, {174, 246, 318, 262}, {318, 262, 462, 228},
+      {72, 392, 190, 342}, {190, 342, 300, 372}, {300, 372, 434, 338},
+      {24, 214, 118, 244}, {118, 244, 226, 224}, {226, 224, 360, 236}};
   for (const auto& l : roads) {
-    blendLine(l[0], l[1], l[2], l[3], road, 48);
+    blendLine(l[0], l[1], l[2], l[3], road, 58);
   }
 
-  const int ridge[][2] = {{42, 330}, {96, 292}, {134, 252}, {174, 222}, {216, 194}, {276, 168}, {354, 142}, {430, 114}};
+  const int ridge[][2] = {{28, 330}, {96, 292}, {134, 252}, {174, 222}, {216, 194}, {276, 168}, {354, 142}, {452, 108}};
   drawBlendPolyline(ridge, 8, border, 48);
-  drawText(154, 248, "GIMEL", label, 1);
+  drawText(134, 252, "PARC", label, 1);
+  drawText(142, 266, "JURA", label, 1);
+  drawText(174, 226, "GIMEL", label, 1);
+  drawText(306, 312, "GLAND", label, 1);
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
@@ -853,17 +864,17 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
   const char* labels[] = {"RADAR", "RECH", "FAV", "REGL", "IA"};
-  constexpr int width = 54;
-  constexpr int height = 32;
+  constexpr int width = 58;
+  constexpr int height = 30;
   constexpr int gap = 6;
-  constexpr int startX = 90;
-  constexpr int y = 364;
+  constexpr int startX = 79;
+  constexpr int y = 374;
   for (int i = 0; i < 5; ++i) {
     const int x = startX + i * (width + gap);
     const bool active = i == 0;
-    fillRoundRect(x, y, width, height, 14, active ? rgb565(5, 31, 20) : panel);
-    drawRoundRect(x, y, width, height, 14, active ? green : rgb565(36, 92, 52));
-    drawTextCentered(x + width / 2, y + 12, labels[i], active ? green : text, 1);
+    fillRoundRect(x, y, width, height, 13, active ? rgb565(3, 25, 18) : panel);
+    drawRoundRect(x, y, width, height, 13, active ? green : rgb565(28, 74, 46));
+    drawTextCentered(x + width / 2, y + 11, labels[i], active ? green : rgb565(190, 215, 198), 1);
   }
 }
 
@@ -891,16 +902,16 @@ void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_
 void drawRadarFrame() {
   if (!frame || !lcdPanel) return;
 
-  constexpr int cx = 240;
-  constexpr int cy = 240;
-  constexpr int r = 198;
+  constexpr int cx = kRadarCx;
+  constexpr int cy = kRadarCy;
+  constexpr int r = kRadarRadius;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(126, 255, 116);
-  const uint16_t softGreen = rgb565(82, 224, 121);
+  const uint16_t green = rgb565(132, 255, 116);
+  const uint16_t softGreen = rgb565(76, 214, 114);
   const uint16_t glow = rgb565(42, 150, 62);
-  const uint16_t dim = rgb565(8, 46, 26);
-  const uint16_t map = rgb565(5, 34, 22);
-  const uint16_t panel = rgb565(1, 13, 12);
+  const uint16_t dim = rgb565(8, 54, 34);
+  const uint16_t map = rgb565(12, 66, 42);
+  const uint16_t panel = rgb565(1, 11, 10);
   const uint16_t text = rgb565(225, 244, 228);
 
   for (int y = 0; y < kHeight; ++y) {
@@ -911,16 +922,16 @@ void drawRadarFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 120 * 120 ? 16 : (d2 < 180 * 180 ? 11 : 7);
-        const uint8_t blue = d2 < 140 * 140 ? 15 : 12;
+        const uint8_t shade = d2 < 120 * 120 ? 18 : (d2 < 190 * 190 ? 13 : 8);
+        const uint8_t blue = d2 < 160 * 160 ? 18 : 13;
         frame[y * kWidth + x] = rgb565(1, shade, blue);
       }
     }
   }
 
-  fillCircle(cx, cy, r - 8, rgb565(2, 17, 16));
-  fillCircle(cx, cy, 168, rgb565(2, 24, 19));
-  fillCircle(cx, cy, 98, rgb565(3, 28, 20));
+  fillCircle(cx, cy, r - 8, rgb565(2, 14, 14));
+  blendFillCircle(cx, cy, 182, rgb565(7, 50, 30), 70);
+  blendFillCircle(cx, cy, 112, rgb565(10, 66, 38), 54);
   if (mapReady && mapFrame) {
     for (int y = 0; y < kHeight; ++y) {
       for (int x = 0; x < kWidth; ++x) {
@@ -928,17 +939,18 @@ void drawRadarFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 190);
+          frame[index] = blend565(frame[index], mapFrame[index], 152);
         }
       }
     }
   } else {
-    drawMapWatermark(map, rgb565(3, 24, 16), rgb565(14, 60, 36), rgb565(20, 76, 44), rgb565(44, 124, 60));
+    drawMapWatermark(map, rgb565(6, 54, 32), rgb565(28, 112, 66), rgb565(34, 132, 78), rgb565(76, 150, 82));
   }
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
-  drawCircle(cx, cy, r - 6, dim);
+  drawCircle(cx, cy, r - 5, dim);
+  drawCircle(cx, cy, r - 12, rgb565(2, 22, 18));
 
   for (int ring = r / 4; ring <= r; ring += r / 4) {
     drawCircle(cx, cy, ring, dim);
@@ -946,13 +958,13 @@ void drawRadarFrame() {
 
   for (int a = 0; a < 360; a += 30) {
     const float rad = a * DEG_TO_RAD;
-    drawLine(cx + cosf(rad) * 16, cy + sinf(rad) * 16,
-             cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
+    blendLine(cx + cosf(rad) * 16, cy + sinf(rad) * 16,
+              cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 70);
   }
 
-  fillWedge(cx, cy, r - 8, sweepDeg - 42.0f, sweepDeg - 28.0f, rgb565(4, 34, 30));
-  fillWedge(cx, cy, r - 8, sweepDeg - 28.0f, sweepDeg - 14.0f, rgb565(6, 58, 46));
-  fillWedge(cx, cy, r - 8, sweepDeg - 14.0f, sweepDeg, rgb565(12, 92, 64));
+  fillWedge(cx, cy, r - 10, sweepDeg - 52.0f, sweepDeg - 34.0f, rgb565(3, 34, 31));
+  fillWedge(cx, cy, r - 10, sweepDeg - 34.0f, sweepDeg - 16.0f, rgb565(5, 56, 45));
+  fillWedge(cx, cy, r - 10, sweepDeg - 16.0f, sweepDeg, rgb565(10, 88, 62));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   drawThickLine(cx, cy,
                 cx + static_cast<int>(cosf(sweepRad) * (r - 6)),
@@ -974,19 +986,18 @@ void drawRadarFrame() {
       drawCircle(x, y, 24, green);
       drawThickLine(cx, cy, x, y, glow);
     }
-    blendFillCircle(x, y, planeIndex == selectedPlane ? 28 : 20, green, planeIndex == selectedPlane ? 46 : 28);
-    fillCircle(x, y, planeIndex == selectedPlane ? 9 : 6, rgb565(0, 18, 14));
-    fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(2, 18, 10));
-    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(106, 232, 100));
-    drawLine(noseX, noseY, leftX, leftY, rgb565(218, 255, 210));
-    drawLine(noseX, noseY, rightX, rightY, rgb565(218, 255, 210));
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 24 : 17, green, planeIndex == selectedPlane ? 32 : 18);
+    fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(1, 12, 8));
+    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(205, 255, 202));
+    drawLine(noseX, noseY, leftX, leftY, green);
+    drawLine(noseX, noseY, rightX, rightY, green);
     ++planeIndex;
   }
 
-  drawTextCentered(cx, 54, "18:47", text, 3);
-  drawTextCentered(cx, 92, "LIVE OPENSKY", softGreen, 1);
-  drawTextCentered(cx, 118, "7", green, 5);
-  drawTextCentered(cx, 164, "AVIONS", green, 3);
+  drawTextCentered(cx, 48, "18:47", text, 2);
+  drawTextCentered(cx, 76, "LIVE OPENSKY", softGreen, 1);
+  drawTextCentered(cx, 98, "7", green, 4);
+  drawTextCentered(cx, 136, "AVIONS", green, 2);
   drawText(cx + r * 42 / 100, cy + 4, "20", softGreen, 2);
   drawText(cx + r * 72 / 100, cy + 4, "50", softGreen, 2);
   drawText(cx + r * 75 / 100, cy + 30, "KM", softGreen, 2);
@@ -1007,7 +1018,7 @@ void drawRadarFrame() {
     drawCircle(lastTouchX, lastTouchY, 16, rgb565(120, 255, 130));
   }
 
-  if (millis() < touchMarkerUntilMs || !gt911Ok || !qmiOk) {
+  if (!gt911Ok || !qmiOk) {
     drawDiagnostics(green, text, panel);
   }
 
@@ -1240,12 +1251,12 @@ void handleTap(uint16_t x, uint16_t y) {
     return;
   }
 
-  if (inRect(x, y, 272, 346, 70, 60)) {
+  if (inRect(x, y, 267, 360, 76, 58)) {
     menuOpen = true;
     return;
   }
-  if (inRect(x, y, 80, 346, 70, 60) || inRect(x, y, 144, 346, 70, 60) ||
-      inRect(x, y, 208, 346, 70, 60) || inRect(x, y, 336, 346, 70, 60)) {
+  if (inRect(x, y, 73, 360, 76, 58) || inRect(x, y, 137, 360, 76, 58) ||
+      inRect(x, y, 201, 360, 76, 58) || inRect(x, y, 331, 360, 76, 58)) {
     menuOpen = false;
     selectedPlane = -1;
     return;
