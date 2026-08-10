@@ -285,6 +285,102 @@ void fillCircle(int cx, int cy, int r, uint16_t color) {
   }
 }
 
+void fillRect(int x, int y, int w, int h, uint16_t color) {
+  for (int yy = y; yy < y + h; ++yy) {
+    for (int xx = x; xx < x + w; ++xx) {
+      putPixel(xx, yy, color);
+    }
+  }
+}
+
+void drawRect(int x, int y, int w, int h, uint16_t color) {
+  drawLine(x, y, x + w - 1, y, color);
+  drawLine(x, y + h - 1, x + w - 1, y + h - 1, color);
+  drawLine(x, y, x, y + h - 1, color);
+  drawLine(x + w - 1, y, x + w - 1, y + h - 1, color);
+}
+
+void fillRoundRect(int x, int y, int w, int h, int radius, uint16_t color) {
+  fillRect(x + radius, y, w - radius * 2, h, color);
+  fillRect(x, y + radius, w, h - radius * 2, color);
+  fillCircle(x + radius, y + radius, radius, color);
+  fillCircle(x + w - radius - 1, y + radius, radius, color);
+  fillCircle(x + radius, y + h - radius - 1, radius, color);
+  fillCircle(x + w - radius - 1, y + h - radius - 1, radius, color);
+}
+
+void drawRoundRect(int x, int y, int w, int h, int radius, uint16_t color) {
+  drawLine(x + radius, y, x + w - radius - 1, y, color);
+  drawLine(x + radius, y + h - 1, x + w - radius - 1, y + h - 1, color);
+  drawLine(x, y + radius, x, y + h - radius - 1, color);
+  drawLine(x + w - 1, y + radius, x + w - 1, y + h - radius - 1, color);
+  drawCircle(x + radius, y + radius, radius, color);
+  drawCircle(x + w - radius - 1, y + radius, radius, color);
+  drawCircle(x + radius, y + h - radius - 1, radius, color);
+  drawCircle(x + w - radius - 1, y + h - radius - 1, radius, color);
+}
+
+uint8_t glyphRow(char c, int row) {
+  if (c >= 'a' && c <= 'z') c -= 32;
+  static const uint8_t digits[10][7] = {
+      {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E},
+      {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},
+      {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},
+      {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E},
+      {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02},
+      {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
+      {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E},
+      {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},
+      {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},
+      {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}};
+  if (c >= '0' && c <= '9') return digits[c - '0'][row];
+  static const uint8_t letters[26][7] = {
+      {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E},
+      {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}, {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E},
+      {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10},
+      {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, {0x11,0x11,0x11,0x1F,0x11,0x11,0x11},
+      {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, {0x07,0x02,0x02,0x02,0x12,0x12,0x0C},
+      {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, {0x10,0x10,0x10,0x10,0x10,0x10,0x1F},
+      {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, {0x11,0x19,0x15,0x13,0x11,0x11,0x11},
+      {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10},
+      {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}, {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11},
+      {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, {0x1F,0x04,0x04,0x04,0x04,0x04,0x04},
+      {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x11,0x11,0x11,0x11,0x11,0x0A,0x04},
+      {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11},
+      {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}, {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}};
+  if (c >= 'A' && c <= 'Z') return letters[c - 'A'][row];
+  if (c == '.') return row == 6 ? 0x04 : 0x00;
+  if (c == ':') return (row == 2 || row == 5) ? 0x04 : 0x00;
+  return 0x00;
+}
+
+int textWidth(const char* text, int scale) {
+  int count = 0;
+  while (text[count]) ++count;
+  return count ? count * 6 * scale - scale : 0;
+}
+
+void drawText(int x, int y, const char* text, uint16_t color, int scale = 1) {
+  for (int i = 0; text[i]; ++i) {
+    for (int row = 0; row < 7; ++row) {
+      uint8_t bits = glyphRow(text[i], row);
+      for (int col = 0; col < 5; ++col) {
+        if (bits & (1 << (4 - col))) {
+          for (int yy = 0; yy < scale; ++yy) {
+            for (int xx = 0; xx < scale; ++xx) {
+              putPixel(x + i * 6 * scale + col * scale + xx, y + row * scale + yy, color);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+void drawTextCentered(int cx, int y, const char* text, uint16_t color, int scale = 1) {
+  drawText(cx - textWidth(text, scale) / 2, y, text, color, scale);
+}
+
 void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_t color) {
   constexpr float stepDeg = 3.0f;
   for (float a = startDeg; a < endDeg; a += stepDeg) {
@@ -304,14 +400,16 @@ void drawRadarFrame() {
 
   constexpr int cx = 240;
   constexpr int cy = 240;
-  constexpr int r = 226;
+  constexpr int r = 220;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(92, 235, 102);
-  const uint16_t glow = rgb565(36, 150, 66);
-  const uint16_t mid = rgb565(22, 120, 48);
-  const uint16_t dim = rgb565(8, 54, 28);
-  const uint16_t map = rgb565(5, 36, 24);
-  const uint16_t panel = rgb565(0, 12, 14);
+  const uint16_t green = rgb565(108, 250, 112);
+  const uint16_t softGreen = rgb565(88, 210, 96);
+  const uint16_t glow = rgb565(42, 150, 62);
+  const uint16_t mid = rgb565(22, 104, 42);
+  const uint16_t dim = rgb565(8, 46, 26);
+  const uint16_t map = rgb565(8, 38, 26);
+  const uint16_t panel = rgb565(1, 13, 12);
+  const uint16_t text = rgb565(225, 244, 228);
 
   for (int y = 0; y < kHeight; ++y) {
     for (int x = 0; x < kWidth; ++x) {
@@ -321,42 +419,48 @@ void drawRadarFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 145 * 145 ? 14 : 10;
-        frame[y * kWidth + x] = rgb565(0, shade, 11);
+        const uint8_t shade = d2 < 138 * 138 ? 16 : (d2 < 192 * 192 ? 12 : 8);
+        frame[y * kWidth + x] = rgb565(1, shade, 12);
       }
     }
   }
 
-  drawCircle(cx, cy, r, green);
-  drawCircle(cx, cy, r - 1, glow);
-  drawCircle(cx, cy, r - 5, dim);
-
-  for (int ring = 50; ring <= 200; ring += 50) {
-    drawCircle(cx, cy, ring, dim);
-  }
-
-  for (int a = 0; a < 360; a += 45) {
-    const float rad = a * DEG_TO_RAD;
-    drawLine(cx, cy, cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
-  }
+  fillCircle(cx, cy, r - 8, rgb565(2, 15, 10));
+  fillCircle(cx, cy, 168, rgb565(2, 20, 12));
+  fillCircle(cx, cy, 98, rgb565(4, 25, 15));
 
   const int mapLines[][4] = {
-      {62, 126, 202, 92}, {202, 92, 338, 122}, {338, 122, 416, 210},
-      {76, 306, 198, 262}, {198, 262, 314, 282}, {314, 282, 420, 344},
-      {138, 394, 234, 348}, {234, 348, 360, 390}, {94, 198, 180, 220},
-      {180, 220, 252, 178}, {252, 178, 338, 206}};
+      {54, 130, 164, 98}, {164, 98, 285, 122}, {285, 122, 414, 78},
+      {42, 310, 142, 270}, {142, 270, 246, 284}, {246, 284, 414, 332},
+      {116, 396, 198, 344}, {198, 344, 340, 386}, {68, 196, 178, 220},
+      {178, 220, 252, 178}, {252, 178, 360, 206}, {70, 374, 160, 402},
+      {312, 90, 342, 202}, {362, 232, 432, 198}, {328, 366, 428, 282}};
   for (const auto& l : mapLines) {
     drawLine(l[0], l[1], l[2], l[3], map);
     drawLine(l[0], l[1] + 1, l[2], l[3] + 1, map);
   }
 
-  fillWedge(cx, cy, r - 20, sweepDeg - 30.0f, sweepDeg - 17.0f, rgb565(0, 44, 34));
-  fillWedge(cx, cy, r - 20, sweepDeg - 17.0f, sweepDeg - 7.0f, rgb565(0, 62, 42));
-  fillWedge(cx, cy, r - 20, sweepDeg - 7.0f, sweepDeg, rgb565(0, 86, 56));
+  drawCircle(cx, cy, r, green);
+  drawCircle(cx, cy, r - 1, softGreen);
+  drawCircle(cx, cy, r - 5, dim);
+
+  for (int ring = 55; ring <= 220; ring += 55) {
+    drawCircle(cx, cy, ring, dim);
+  }
+
+  for (int a = 0; a < 360; a += 30) {
+    const float rad = a * DEG_TO_RAD;
+    drawLine(cx + cosf(rad) * 16, cy + sinf(rad) * 16,
+             cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
+  }
+
+  fillWedge(cx, cy, r - 10, sweepDeg - 34.0f, sweepDeg - 22.0f, rgb565(0, 34, 25));
+  fillWedge(cx, cy, r - 10, sweepDeg - 22.0f, sweepDeg - 10.0f, rgb565(0, 52, 35));
+  fillWedge(cx, cy, r - 10, sweepDeg - 10.0f, sweepDeg, rgb565(0, 76, 48));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   drawThickLine(cx, cy,
-                cx + static_cast<int>(cosf(sweepRad) * (r - 18)),
-                cy + static_cast<int>(sinf(sweepRad) * (r - 18)),
+                cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
+                cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
                 green);
 
   const int planes[][3] = {
@@ -372,29 +476,28 @@ void drawRadarFrame() {
     const int leftY = y + static_cast<int>(sinf(ar + 2.55f) * 10);
     const int rightX = x + static_cast<int>(cosf(ar - 2.55f) * 10);
     const int rightY = y + static_cast<int>(sinf(ar - 2.55f) * 10);
-    fillCircle(x, y, 13, rgb565(0, 42, 22));
-    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, green);
-    drawLine(noseX, noseY, leftX, leftY, rgb565(200, 255, 205));
-    drawLine(noseX, noseY, rightX, rightY, rgb565(200, 255, 205));
+    fillCircle(x, y, 11, rgb565(0, 34, 18));
+    fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(2, 18, 10));
+    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, softGreen);
+    drawLine(noseX, noseY, leftX, leftY, green);
+    drawLine(noseX, noseY, rightX, rightY, green);
   }
+
+  drawTextCentered(cx, 54, "18:47", text, 3);
+  drawTextCentered(cx, 91, "AIRPLANES.LIVE", softGreen, 2);
+  drawTextCentered(cx, 124, "7", green, 7);
+  drawTextCentered(cx, 183, "AVIONS", green, 3);
+  drawText(330, 236, "20", softGreen, 2);
+  drawText(386, 236, "50", softGreen, 2);
+  drawText(390, 264, "KM", softGreen, 2);
 
   fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
   drawCircle(cx, cy, 18, dim);
 
-  for (int y = 400; y <= 438; ++y) {
-    for (int x = 166; x <= 314; ++x) {
-      const int dx = min(abs(x - 166), abs(x - 314));
-      const int dy = min(abs(y - 400), abs(y - 438));
-      if (dx + dy > 10) {
-        putPixel(x, y, panel);
-      }
-    }
-  }
-  for (int x = 184; x <= 296; ++x) {
-    putPixel(x, 419, green);
-    putPixel(x, 420, green);
-  }
+  fillRoundRect(176, 388, 128, 46, 17, panel);
+  drawRoundRect(176, 388, 128, 46, 17, green);
+  drawTextCentered(cx, 405, "MENU", text, 3);
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
 }
