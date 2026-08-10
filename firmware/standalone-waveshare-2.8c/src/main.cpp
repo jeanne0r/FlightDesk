@@ -702,6 +702,22 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   drawTextCentered(354, 162, "X", text, 3);
 }
 
+void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
+  const char* labels[] = {"RADAR", "RECH", "FAV", "REGL", "IA"};
+  constexpr int width = 58;
+  constexpr int height = 36;
+  constexpr int gap = 6;
+  constexpr int startX = 80;
+  constexpr int y = 358;
+  for (int i = 0; i < 5; ++i) {
+    const int x = startX + i * (width + gap);
+    const bool active = i == 0;
+    fillRoundRect(x, y, width, height, 14, active ? rgb565(5, 31, 20) : panel);
+    drawRoundRect(x, y, width, height, 14, active ? green : rgb565(36, 92, 52));
+    drawTextCentered(x + width / 2, y + 13, labels[i], active ? green : text, 1);
+  }
+}
+
 void drawDiagnostics(uint16_t green, uint16_t text, uint16_t panel) {
   char line[48];
   fillRoundRect(126, 446, 228, 20, 8, panel);
@@ -728,7 +744,7 @@ void drawRadarFrame() {
 
   constexpr int cx = 240;
   constexpr int cy = 240;
-  constexpr int r = 220;
+  constexpr int r = 198;
   const uint16_t black = rgb565(0, 2, 3);
   const uint16_t green = rgb565(118, 252, 112);
   const uint16_t softGreen = rgb565(86, 214, 96);
@@ -760,9 +776,9 @@ void drawRadarFrame() {
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
-  drawCircle(cx, cy, r - 5, dim);
+  drawCircle(cx, cy, r - 6, dim);
 
-  for (int ring = 55; ring <= 220; ring += 55) {
+  for (int ring = r / 4; ring <= r; ring += r / 4) {
     drawCircle(cx, cy, ring, dim);
   }
 
@@ -772,13 +788,13 @@ void drawRadarFrame() {
              cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
   }
 
-  fillWedge(cx, cy, r - 12, sweepDeg - 40.0f, sweepDeg - 27.0f, rgb565(0, 28, 22));
-  fillWedge(cx, cy, r - 12, sweepDeg - 27.0f, sweepDeg - 13.0f, rgb565(0, 46, 32));
-  fillWedge(cx, cy, r - 12, sweepDeg - 13.0f, sweepDeg, rgb565(0, 70, 44));
+  fillWedge(cx, cy, r - 8, sweepDeg - 42.0f, sweepDeg - 28.0f, rgb565(0, 42, 36));
+  fillWedge(cx, cy, r - 8, sweepDeg - 28.0f, sweepDeg - 14.0f, rgb565(0, 72, 58));
+  fillWedge(cx, cy, r - 8, sweepDeg - 14.0f, sweepDeg, rgb565(0, 112, 82));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   drawThickLine(cx, cy,
-                cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
-                cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
+                cx + static_cast<int>(cosf(sweepRad) * (r - 6)),
+                cy + static_cast<int>(sinf(sweepRad) * (r - 6)),
                 green);
 
   int planeIndex = 0;
@@ -805,10 +821,13 @@ void drawRadarFrame() {
     ++planeIndex;
   }
 
-  drawTextCentered(cx, 48, "7 AVIONS", green, 3);
-  drawText(332, 236, "20", softGreen, 2);
-  drawText(386, 236, "50", softGreen, 2);
-  drawText(388, 262, "KM", softGreen, 2);
+  drawTextCentered(cx, 54, "18:47", text, 3);
+  drawTextCentered(cx, 92, "LIVE OPENSKY", softGreen, 1);
+  drawTextCentered(cx, 118, "7", green, 5);
+  drawTextCentered(cx, 164, "AVIONS", green, 3);
+  drawText(cx + r * 42 / 100, cy + 4, "20", softGreen, 2);
+  drawText(cx + r * 72 / 100, cy + 4, "50", softGreen, 2);
+  drawText(cx + r * 75 / 100, cy + 30, "KM", softGreen, 2);
 
   fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
@@ -819,9 +838,7 @@ void drawRadarFrame() {
   } else if (selectedPlane >= 0) {
     drawAircraftPopup(green, text, panel);
   } else {
-    fillRoundRect(172, 390, 136, 44, 18, rgb565(1, 12, 12));
-    drawRoundRect(172, 390, 136, 44, 18, rgb565(96, 238, 106));
-    drawTextCentered(cx, 406, "MENU", text, 3);
+    drawScreenNav(green, text, rgb565(1, 12, 12));
   }
 
   if (millis() < touchMarkerUntilMs) {
@@ -1048,8 +1065,14 @@ void handleTap(uint16_t x, uint16_t y) {
     return;
   }
 
-  if (inRect(x, y, 154, 370, 172, 86)) {
+  if (inRect(x, y, 272, 346, 70, 60)) {
     menuOpen = true;
+    return;
+  }
+  if (inRect(x, y, 80, 346, 70, 60) || inRect(x, y, 144, 346, 70, 60) ||
+      inRect(x, y, 208, 346, 70, 60) || inRect(x, y, 336, 346, 70, 60)) {
+    menuOpen = false;
+    selectedPlane = -1;
     return;
   }
 
