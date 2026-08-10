@@ -18,8 +18,9 @@ constexpr uint32_t kI2cClockHz = 400000;
 constexpr int kBacklightPin = 6;
 constexpr uint8_t kPca9554Address = 0x20;
 constexpr uint8_t kPcaLcdResetBit = 0;
-constexpr uint8_t kPcaTouchResetBit = 1;
 constexpr uint8_t kPcaLcdCsBit = 2;
+constexpr uint8_t kPcaLcdControlMask =
+    static_cast<uint8_t>((1U << kPcaLcdResetBit) | (1U << kPcaLcdCsBit));
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
@@ -77,13 +78,14 @@ void initPanelControlLines() {
   pinMode(kBacklightPin, OUTPUT);
   digitalWrite(kBacklightPin, LOW);
 
-  uint8_t outputState = 0xFF;
-  pca9554Write(0x03, 0x00);  // all PCA9554 pins as outputs
+  // Only drive LCD reset and LCD CS. Other PCA9554 pins may control onboard
+  // devices such as the buzzer, so keep them as inputs.
+  uint8_t outputState = static_cast<uint8_t>(0xFF & ~kPcaLcdControlMask);
   pca9554Write(0x01, outputState);
+  pca9554Write(0x03, static_cast<uint8_t>(0xFF & ~kPcaLcdControlMask));
   delay(10);
 
-  setPcaBit(outputState, kPcaLcdCsBit, false);     // keep ST7701 command CS active
-  setPcaBit(outputState, kPcaTouchResetBit, true); // release touch reset
+  setPcaBit(outputState, kPcaLcdCsBit, false);  // keep ST7701 command CS active
   setPcaBit(outputState, kPcaLcdResetBit, false);
   delay(80);
   setPcaBit(outputState, kPcaLcdResetBit, true);
