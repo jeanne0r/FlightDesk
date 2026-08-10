@@ -41,6 +41,13 @@ constexpr uint8_t kGt911Address = 0x5D;
 constexpr uint16_t kGt911ReadXyReg = 0x814E;
 constexpr uint16_t kGt911ProductIdReg = 0x8140;
 constexpr int kGt911IntPin = 16;
+constexpr uint8_t kQmi8658Address = 0x6B;
+constexpr uint8_t kQmi8658WhoAmI = 0x00;
+constexpr uint8_t kQmi8658Ctrl1 = 0x02;
+constexpr uint8_t kQmi8658Ctrl2 = 0x03;
+constexpr uint8_t kQmi8658Ctrl3 = 0x04;
+constexpr uint8_t kQmi8658Ctrl7 = 0x08;
+constexpr uint8_t kQmi8658AxL = 0x35;
 
 spi_device_handle_t lcdSpi = nullptr;
 esp_lcd_panel_handle_t lcdPanel = nullptr;
@@ -50,6 +57,7 @@ uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
 uint32_t lastRadarMs = 0;
 uint32_t lastTouchPollMs = 0;
+uint32_t lastImuMs = 0;
 uint32_t touchMarkerUntilMs = 0;
 float sweepDeg = -75.0f;
 bool touchWasDown = false;
@@ -57,6 +65,11 @@ bool menuOpen = false;
 int selectedPlane = -1;
 uint16_t lastTouchX = 0;
 uint16_t lastTouchY = 0;
+bool gt911Ok = false;
+bool qmiOk = false;
+float accX = 0.0f;
+float accY = 0.0f;
+float accZ = 0.0f;
 
 struct RadarPlane {
   int x;
@@ -120,6 +133,29 @@ bool touchI2cWrite(uint16_t reg, uint8_t value) {
   return Wire.endTransmission(true) == 0;
 }
 
+bool i2cRead8(uint8_t address, uint8_t reg, uint8_t* data, size_t len) {
+  Wire.beginTransmission(address);
+  Wire.write(reg);
+  if (Wire.endTransmission(true) != 0) {
+    return false;
+  }
+  const uint8_t got = Wire.requestFrom(address, static_cast<uint8_t>(len));
+  if (got != len) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    data[i] = Wire.read();
+  }
+  return true;
+}
+
+bool i2cWrite8(uint8_t address, uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(address);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission(true) == 0;
+}
+
 void initExio() {
   uint8_t output = 0xFF;
   output &= static_cast<uint8_t>(~(1U << (kExioLcdCs - 1)));      // LCD CS active
@@ -141,11 +177,44 @@ void initTouch() {
   pinMode(kGt911IntPin, INPUT);
 
   uint8_t product[4] = {};
-  if (touchI2cRead(kGt911ProductIdReg, product, 4)) {
+  gt911Ok = touchI2cRead(kGt911ProductIdReg, product, 4);
+  if (gt911Ok) {
     Serial.printf("[TOUCH] GT911 product=%c%c%c%c\n", product[0], product[1], product[2], product[3]);
   } else {
     Serial.println("[TOUCH] GT911 absent ou lecture KO");
   }
+}
+
+void initImu() {
+  Serial.println("[IMU] Init QMI8658");
+  uint8_t who = 0;
+  qmiOk = i2cRead8(kQmi8658Address, kQmi8658WhoAmI, &who, 1);
+  if (!qmiOk) {
+    Serial.println("[IMU] QMI8658 absent ou lecture KO");
+    return;
+  }
+
+  Serial.printf("[IMU] QMI8658 who=0x%02X\n", who);
+  qmiOk &= i2cWrite8(kQmi8658Address, kQmi8658Ctrl1, 0x40);  // auto increment
+  qmiOk &= i2cWrite8(kQmi8658Address, kQmi8658Ctrl2, 0x21);  // +/-4g, low ODR
+  qmiOk &= i2cWrite8(kQmi8658Address, kQmi8658Ctrl3, 0x21);  // gyro configured
+  qmiOk &= i2cWrite8(kQmi8658Address, kQmi8658Ctrl7, 0x03);  // accel + gyro
+}
+
+void pollImu() {
+  if (!qmiOk) return;
+  uint8_t data[6] = {};
+  if (!i2cRead8(kQmi8658Address, kQmi8658AxL, data, sizeof(data))) {
+    qmiOk = false;
+    return;
+  }
+  const int16_t rawX = static_cast<int16_t>((data[1] << 8) | data[0]);
+  const int16_t rawY = static_cast<int16_t>((data[3] << 8) | data[2]);
+  const int16_t rawZ = static_cast<int16_t>((data[5] << 8) | data[4]);
+  constexpr float scale = 4.0f / 32768.0f;
+  accX = rawX * scale;
+  accY = rawY * scale;
+  accZ = rawZ * scale;
 }
 
 bool readTouch(uint16_t& x, uint16_t& y) {
@@ -504,6 +573,18 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   drawTextCentered(349, 164, "X", text, 3);
 }
 
+void drawDiagnostics(uint16_t green, uint16_t text, uint16_t panel) {
+  char line[48];
+  fillRoundRect(48, 438, 384, 28, 10, panel);
+  snprintf(line, sizeof(line), "GT %s  QMI %s", gt911Ok ? "OK" : "KO", qmiOk ? "OK" : "KO");
+  drawText(66, 446, line, gt911Ok && qmiOk ? green : text, 2);
+  if (qmiOk) {
+    char xyz[48];
+    snprintf(xyz, sizeof(xyz), "X%+.1f Y%+.1f Z%+.1f", accX, accY, accZ);
+    drawText(248, 446, xyz, text, 1);
+  }
+}
+
 void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_t color) {
   constexpr float stepDeg = 3.0f;
   for (float a = startDeg; a < endDeg; a += stepDeg) {
@@ -636,6 +717,8 @@ void drawRadarFrame() {
     drawLine(lastTouchX - 24, lastTouchY, lastTouchX + 24, lastTouchY, rgb565(255, 255, 255));
     drawLine(lastTouchX, lastTouchY - 24, lastTouchX, lastTouchY + 24, rgb565(255, 255, 255));
   }
+
+  drawDiagnostics(green, text, panel);
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
 }
@@ -885,6 +968,7 @@ void setup() {
   scanI2c();
   initDisplay();
   initTouch();
+  initImu();
   connectWifi();
   printStatus();
 }
@@ -905,6 +989,11 @@ void loop() {
   if (now - lastTouchPollMs >= 30) {
     lastTouchPollMs = now;
     pollTouch();
+  }
+
+  if (now - lastImuMs >= 200) {
+    lastImuMs = now;
+    pollImu();
   }
 
   if (now - lastRadarMs >= 300) {
