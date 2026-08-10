@@ -41,8 +41,6 @@ uint16_t* frame = nullptr;
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
-uint32_t lastRadarMs = 0;
-float sweepDeg = 0;
 
 void pcaWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kTca9554Address);
@@ -269,7 +267,6 @@ void drawRadarFrame() {
   constexpr int r = 226;
   const uint16_t green = rgb565(95, 255, 105);
   const uint16_t dim = rgb565(20, 90, 35);
-  const uint16_t sweep = rgb565(35, 170, 70);
 
   fillCircle(cx, cy, r, rgb565(0, 22, 14));
   drawCircle(cx, cy, r, green);
@@ -284,11 +281,9 @@ void drawRadarFrame() {
     drawLine(cx, cy, cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
   }
 
-  const float angle = sweepDeg * DEG_TO_RAD;
-  for (int i = 0; i < 22; ++i) {
-    const float rad = (sweepDeg - i * 2.2f) * DEG_TO_RAD;
-    drawLine(cx, cy, cx + cosf(rad) * (r - 16), cy + sinf(rad) * (r - 16), i == 0 ? green : sweep);
-  }
+  drawLine(cx, cy, cx + 190, cy - 70, green);
+  drawLine(cx, cy, cx + 160, cy - 40, rgb565(35, 170, 70));
+  drawLine(cx, cy, cx + 130, cy - 15, rgb565(25, 110, 50));
 
   const int planes[][3] = {
       {122, 116, 32}, {342, 132, 120}, {190, 310, 205}, {318, 332, 292},
@@ -304,6 +299,59 @@ void drawRadarFrame() {
 
   fillCircle(cx, cy, 9, dark);
   drawCircle(cx, cy, 10, green);
+
+  esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
+}
+
+void drawCalibrationFrame() {
+  if (!frame || !lcdPanel) return;
+
+  const uint16_t black = rgb565(0, 0, 0);
+  const uint16_t green = rgb565(80, 255, 95);
+  const uint16_t darkGreen = rgb565(0, 35, 18);
+  const uint16_t red = rgb565(180, 0, 0);
+  const uint16_t blue = rgb565(0, 40, 160);
+
+  for (int i = 0; i < kWidth * kHeight; ++i) {
+    frame[i] = black;
+  }
+
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      if (x < 240 && y < 240) {
+        putPixel(x, y, darkGreen);
+      } else if (x >= 240 && y < 240) {
+        putPixel(x, y, rgb565(0, 18, 8));
+      } else if (x < 240) {
+        putPixel(x, y, rgb565(0, 10, 20));
+      } else {
+        putPixel(x, y, rgb565(15, 0, 18));
+      }
+    }
+  }
+
+  drawCircle(240, 240, 226, green);
+  drawCircle(240, 240, 180, green);
+  drawCircle(240, 240, 120, green);
+  drawCircle(240, 240, 60, green);
+  drawLine(0, 240, 479, 240, green);
+  drawLine(240, 0, 240, 479, green);
+  drawLine(20, 20, 459, 459, red);
+  drawLine(459, 20, 20, 459, blue);
+
+  for (int y = 388; y <= 438; ++y) {
+    for (int x = 150; x <= 330; ++x) {
+      putPixel(x, y, rgb565(0, 12, 18));
+    }
+  }
+  for (int x = 150; x <= 330; ++x) {
+    putPixel(x, 388, green);
+    putPixel(x, 438, green);
+  }
+  for (int y = 388; y <= 438; ++y) {
+    putPixel(150, y, green);
+    putPixel(330, y, green);
+  }
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
 }
@@ -352,7 +400,9 @@ bool initDisplay() {
 
   esp_lcd_rgb_panel_config_t rgbConfig = {};
   rgbConfig.clk_src = LCD_CLK_SRC_PLL240M;
-  rgbConfig.timings.pclk_hz = 30 * 1000 * 1000;
+  // Lower than the official 30 MHz demo while we are still using the older
+  // Arduino-bundled esp_lcd driver without its bounce-buffer option.
+  rgbConfig.timings.pclk_hz = 12 * 1000 * 1000;
   rgbConfig.timings.h_res = kHeight;
   rgbConfig.timings.v_res = kWidth;
   rgbConfig.timings.hsync_pulse_width = 8;
@@ -391,8 +441,8 @@ bool initDisplay() {
   }
 
   initBacklight();
-  drawRadarFrame();
-  Serial.println("[DISPLAY] OK radar test visible");
+  drawCalibrationFrame();
+  Serial.println("[DISPLAY] OK calibration frame written once");
   return true;
 }
 
@@ -500,15 +550,6 @@ void loop() {
   if (now - lastI2cScanMs >= 30000) {
     lastI2cScanMs = now;
     scanI2c();
-  }
-
-  if (now - lastRadarMs >= 120) {
-    lastRadarMs = now;
-    sweepDeg += 2.5f;
-    if (sweepDeg >= 360.0f) {
-      sweepDeg -= 360.0f;
-    }
-    drawRadarFrame();
   }
 
   delay(10);
