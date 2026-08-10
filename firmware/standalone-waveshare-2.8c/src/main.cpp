@@ -68,6 +68,7 @@ uint32_t lastImuMs = 0;
 uint32_t lastMapFetchMs = 0;
 uint32_t touchMarkerUntilMs = 0;
 uint32_t lastTouchLogMs = 0;
+uint32_t bootMs = 0;
 float sweepDeg = -75.0f;
 bool touchWasDown = false;
 bool touchActive = false;
@@ -811,36 +812,44 @@ void drawBlendPolyline(const int points[][2], int count, uint16_t color, uint8_t
 }
 
 void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t border, uint16_t label) {
-  blendFillCircle(122, 126, 58, forest, 24);
-  blendFillCircle(314, 116, 72, forest, 18);
-  blendFillCircle(112, 330, 88, forest, 18);
-  blendFillCircle(344, 318, 88, forest, 21);
+  blendFillCircle(116, 104, 92, forest, 56);
+  blendFillCircle(302, 118, 112, forest, 42);
+  blendFillCircle(122, 318, 118, forest, 36);
+  blendFillCircle(350, 312, 128, forest, 42);
+  blendFillCircle(240, 230, 164, rgb565(12, 74, 42), 28);
 
   const int contours[][4] = {
-      {18, 124, 116, 100}, {116, 100, 250, 112}, {250, 112, 452, 76},
-      {22, 318, 122, 282}, {122, 282, 244, 292}, {244, 292, 458, 342},
-      {78, 404, 188, 350}, {188, 350, 342, 386}, {28, 206, 160, 224},
-      {160, 224, 242, 184}, {242, 184, 398, 204}, {318, 368, 456, 282},
-      {64, 150, 168, 188}, {168, 188, 264, 170}, {264, 170, 406, 150},
-      {42, 248, 150, 252}, {150, 252, 250, 230}, {250, 230, 422, 252}};
+      {0, 116, 116, 100}, {116, 100, 250, 112}, {250, 112, 480, 76},
+      {0, 318, 122, 282}, {122, 282, 244, 292}, {244, 292, 480, 342},
+      {48, 414, 188, 350}, {188, 350, 342, 386}, {0, 206, 160, 224},
+      {160, 224, 242, 184}, {242, 184, 398, 204}, {318, 368, 480, 282},
+      {44, 150, 168, 188}, {168, 188, 264, 170}, {264, 170, 426, 150},
+      {0, 248, 150, 252}, {150, 252, 250, 230}, {250, 230, 450, 252},
+      {88, 74, 166, 132}, {166, 132, 258, 148}, {258, 148, 372, 108},
+      {86, 354, 210, 312}, {210, 312, 324, 338}, {324, 338, 440, 318}};
   for (const auto& l : contours) {
-    blendLine(l[0], l[1], l[2], l[3], terrain, 40);
+    blendLine(l[0], l[1], l[2], l[3], terrain, 54);
   }
 
   const int roads[][4] = {
-      {24, 286, 174, 246}, {174, 246, 318, 262}, {318, 262, 462, 228},
+      {0, 286, 174, 246}, {174, 246, 318, 262}, {318, 262, 480, 228},
       {72, 392, 190, 342}, {190, 342, 300, 372}, {300, 372, 434, 338},
-      {24, 214, 118, 244}, {118, 244, 226, 224}, {226, 224, 360, 236}};
+      {0, 214, 118, 244}, {118, 244, 226, 224}, {226, 224, 392, 236},
+      {268, 304, 356, 300}, {356, 300, 462, 270}};
   for (const auto& l : roads) {
-    blendLine(l[0], l[1], l[2], l[3], road, 58);
+    blendThickLine(l[0], l[1], l[2], l[3], road, 80);
   }
 
-  const int ridge[][2] = {{28, 330}, {96, 292}, {134, 252}, {174, 222}, {216, 194}, {276, 168}, {354, 142}, {452, 108}};
+  const int ridge[][2] = {{0, 330}, {96, 292}, {134, 252}, {174, 222}, {216, 194}, {276, 168}, {354, 142}, {480, 108}};
   drawBlendPolyline(ridge, 8, border, 48);
-  drawText(134, 252, "PARC", label, 1);
-  drawText(142, 266, "JURA", label, 1);
-  drawText(174, 226, "GIMEL", label, 1);
-  drawText(306, 312, "GLAND", label, 1);
+  drawText(156, 156, "PARC", label, 2);
+  drawText(118, 180, "NATUREL", label, 2);
+  drawText(118, 204, "REGIONAL", label, 2);
+  drawText(124, 228, "JURA", label, 2);
+  drawText(116, 252, "VAUDOIS", label, 2);
+  drawText(176, 290, "GIMEL", label, 1);
+  drawText(308, 314, "GLAND", label, 1);
+  drawText(388, 256, "A1", label, 1);
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
@@ -955,7 +964,7 @@ void drawRadarFrame() {
       }
     }
   } else {
-    drawMapWatermark(map, rgb565(6, 54, 32), rgb565(28, 112, 66), rgb565(34, 132, 78), rgb565(66, 138, 74));
+    drawMapWatermark(map, rgb565(6, 54, 32), rgb565(28, 112, 66), rgb565(34, 132, 78), rgb565(7, 48, 28));
   }
 
   drawCircle(cx, cy, r, green);
@@ -1315,7 +1324,7 @@ void setup() {
   initTouch();
   initImu();
   connectWifi();
-  fetchMapTiles();
+  bootMs = millis();
   printStatus();
 }
 
@@ -1327,7 +1336,8 @@ void loop() {
     printStatus();
   }
 
-  if (!mapReady && WiFi.status() == WL_CONNECTED && now - lastMapFetchMs >= 60000) {
+  if (!mapReady && WiFi.status() == WL_CONNECTED && now - bootMs >= 6000 &&
+      (lastMapFetchMs == 0 || now - lastMapFetchMs >= 60000)) {
     lastMapFetchMs = now;
     fetchMapTiles();
     drawRadarFrame();
