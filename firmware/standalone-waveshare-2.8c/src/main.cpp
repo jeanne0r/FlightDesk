@@ -234,6 +234,14 @@ void drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
   }
 }
 
+void drawThickLine(int x0, int y0, int x1, int y1, uint16_t color) {
+  drawLine(x0, y0, x1, y1, color);
+  drawLine(x0 + 1, y0, x1 + 1, y1, color);
+  drawLine(x0 - 1, y0, x1 - 1, y1, color);
+  drawLine(x0, y0 + 1, x1, y1 + 1, color);
+  drawLine(x0, y0 - 1, x1, y1 - 1, color);
+}
+
 void drawCircle(int cx, int cy, int r, uint16_t color) {
   int x = -r, y = 0, err = 2 - 2 * r;
   do {
@@ -245,6 +253,27 @@ void drawCircle(int cx, int cy, int r, uint16_t color) {
     if (e2 <= y) err += ++y * 2 + 1;
     if (e2 > x || err > y) err += ++x * 2 + 1;
   } while (x < 0);
+}
+
+void fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t color) {
+  int minX = min(x0, min(x1, x2));
+  int maxX = max(x0, max(x1, x2));
+  int minY = min(y0, min(y1, y2));
+  int maxY = max(y0, max(y1, y2));
+  const int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+  if (area == 0) return;
+
+  for (int y = minY; y <= maxY; ++y) {
+    for (int x = minX; x <= maxX; ++x) {
+      const int w0 = (x1 - x0) * (y - y0) - (y1 - y0) * (x - x0);
+      const int w1 = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
+      const int w2 = (x0 - x2) * (y - y2) - (y0 - y2) * (x - x2);
+      if ((area > 0 && w0 >= 0 && w1 >= 0 && w2 >= 0) ||
+          (area < 0 && w0 <= 0 && w1 <= 0 && w2 <= 0)) {
+        putPixel(x, y, color);
+      }
+    }
+  }
 }
 
 void fillCircle(int cx, int cy, int r, uint16_t color) {
@@ -259,28 +288,40 @@ void fillCircle(int cx, int cy, int r, uint16_t color) {
 void drawRadarFrame() {
   if (!frame || !lcdPanel) return;
 
-  const uint16_t dark = rgb565(0, 6, 7);
-  for (int i = 0; i < kWidth * kHeight; ++i) {
-    frame[i] = dark;
-  }
-
   constexpr int cx = 240;
   constexpr int cy = 240;
   constexpr int r = 226;
-  const uint16_t green = rgb565(115, 255, 120);
-  const uint16_t mid = rgb565(34, 150, 58);
-  const uint16_t dim = rgb565(12, 70, 30);
-  const uint16_t map = rgb565(12, 50, 32);
+  const uint16_t black = rgb565(0, 2, 3);
+  const uint16_t green = rgb565(95, 245, 105);
+  const uint16_t glow = rgb565(48, 180, 72);
+  const uint16_t mid = rgb565(22, 120, 48);
+  const uint16_t dim = rgb565(8, 54, 28);
+  const uint16_t map = rgb565(5, 36, 24);
+  const uint16_t panel = rgb565(0, 12, 14);
 
-  fillCircle(cx, cy, r, rgb565(0, 22, 14));
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      const int dx = x - cx;
+      const int dy = y - cy;
+      const int d2 = dx * dx + dy * dy;
+      if (d2 > r * r) {
+        frame[y * kWidth + x] = black;
+      } else {
+        const uint8_t shade = d2 < 145 * 145 ? 18 : 12;
+        frame[y * kWidth + x] = rgb565(0, shade, 10);
+      }
+    }
+  }
+
   drawCircle(cx, cy, r, green);
+  drawCircle(cx, cy, r - 1, glow);
   drawCircle(cx, cy, r - 5, dim);
 
-  for (int ring = 45; ring <= 180; ring += 45) {
+  for (int ring = 50; ring <= 200; ring += 50) {
     drawCircle(cx, cy, ring, dim);
   }
 
-  for (int a = 0; a < 360; a += 30) {
+  for (int a = 0; a < 360; a += 45) {
     const float rad = a * DEG_TO_RAD;
     drawLine(cx, cy, cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
   }
@@ -292,13 +333,14 @@ void drawRadarFrame() {
       {180, 220, 252, 178}, {252, 178, 338, 206}};
   for (const auto& l : mapLines) {
     drawLine(l[0], l[1], l[2], l[3], map);
+    drawLine(l[0], l[1] + 1, l[2], l[3] + 1, map);
   }
 
-  const float sweepRad = sweepDeg * DEG_TO_RAD;
-  drawLine(cx, cy, cx + cosf(sweepRad) * (r - 12), cy + sinf(sweepRad) * (r - 12), green);
-  for (int i = 1; i <= 9; ++i) {
-    const float trail = (sweepDeg - i * 4.0f) * DEG_TO_RAD;
-    drawLine(cx, cy, cx + cosf(trail) * (r - 20), cy + sinf(trail) * (r - 20), mid);
+  for (int i = 16; i >= 0; --i) {
+    const float trail = (sweepDeg - i * 3.0f) * DEG_TO_RAD;
+    const int reach = r - 18 - i;
+    const uint16_t color = i == 0 ? green : (i < 7 ? glow : mid);
+    drawThickLine(cx, cy, cx + cosf(trail) * reach, cy + sinf(trail) * reach, color);
   }
 
   const int planes[][3] = {
@@ -308,79 +350,34 @@ void drawRadarFrame() {
     const float ar = p[2] * DEG_TO_RAD;
     const int x = p[0];
     const int y = p[1];
-    drawLine(x, y, x + cosf(ar) * 18, y + sinf(ar) * 18, green);
-    drawLine(x, y, x + cosf(ar + 2.45f) * 9, y + sinf(ar + 2.45f) * 9, green);
-    drawLine(x, y, x + cosf(ar - 2.45f) * 9, y + sinf(ar - 2.45f) * 9, green);
+    const int noseX = x + static_cast<int>(cosf(ar) * 17);
+    const int noseY = y + static_cast<int>(sinf(ar) * 17);
+    const int leftX = x + static_cast<int>(cosf(ar + 2.55f) * 10);
+    const int leftY = y + static_cast<int>(sinf(ar + 2.55f) * 10);
+    const int rightX = x + static_cast<int>(cosf(ar - 2.55f) * 10);
+    const int rightY = y + static_cast<int>(sinf(ar - 2.55f) * 10);
+    fillCircle(x, y, 13, rgb565(0, 42, 22));
+    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, green);
+    drawLine(noseX, noseY, leftX, leftY, rgb565(200, 255, 205));
+    drawLine(noseX, noseY, rightX, rightY, rgb565(200, 255, 205));
   }
 
-  fillCircle(cx, cy, 9, dark);
+  fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
+  drawCircle(cx, cy, 18, dim);
 
-  for (int y = 404; y <= 438; ++y) {
-    for (int x = 170; x <= 310; ++x) {
-      putPixel(x, y, rgb565(0, 14, 18));
-    }
-  }
-  for (int x = 170; x <= 310; ++x) {
-    putPixel(x, 404, green);
-    putPixel(x, 438, green);
-  }
-  for (int y = 404; y <= 438; ++y) {
-    putPixel(170, y, green);
-    putPixel(310, y, green);
-  }
-
-  esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
-}
-
-void drawCalibrationFrame() {
-  if (!frame || !lcdPanel) return;
-
-  const uint16_t black = rgb565(0, 0, 0);
-  const uint16_t green = rgb565(80, 255, 95);
-  const uint16_t darkGreen = rgb565(0, 35, 18);
-  const uint16_t red = rgb565(180, 0, 0);
-  const uint16_t blue = rgb565(0, 40, 160);
-
-  for (int i = 0; i < kWidth * kHeight; ++i) {
-    frame[i] = black;
-  }
-
-  for (int y = 0; y < kHeight; ++y) {
-    for (int x = 0; x < kWidth; ++x) {
-      if (x < 240 && y < 240) {
-        putPixel(x, y, darkGreen);
-      } else if (x >= 240 && y < 240) {
-        putPixel(x, y, rgb565(0, 18, 8));
-      } else if (x < 240) {
-        putPixel(x, y, rgb565(0, 10, 20));
-      } else {
-        putPixel(x, y, rgb565(15, 0, 18));
+  for (int y = 400; y <= 438; ++y) {
+    for (int x = 166; x <= 314; ++x) {
+      const int dx = min(abs(x - 166), abs(x - 314));
+      const int dy = min(abs(y - 400), abs(y - 438));
+      if (dx + dy > 10) {
+        putPixel(x, y, panel);
       }
     }
   }
-
-  drawCircle(240, 240, 226, green);
-  drawCircle(240, 240, 180, green);
-  drawCircle(240, 240, 120, green);
-  drawCircle(240, 240, 60, green);
-  drawLine(0, 240, 479, 240, green);
-  drawLine(240, 0, 240, 479, green);
-  drawLine(20, 20, 459, 459, red);
-  drawLine(459, 20, 20, 459, blue);
-
-  for (int y = 388; y <= 438; ++y) {
-    for (int x = 150; x <= 330; ++x) {
-      putPixel(x, y, rgb565(0, 12, 18));
-    }
-  }
-  for (int x = 150; x <= 330; ++x) {
-    putPixel(x, 388, green);
-    putPixel(x, 438, green);
-  }
-  for (int y = 388; y <= 438; ++y) {
-    putPixel(150, y, green);
-    putPixel(330, y, green);
+  for (int x = 184; x <= 296; ++x) {
+    putPixel(x, 419, green);
+    putPixel(x, 420, green);
   }
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
