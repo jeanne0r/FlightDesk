@@ -14,6 +14,7 @@
 #else
 #include "secrets.example.h"
 #endif
+#include "embedded_map.h"
 
 namespace {
 
@@ -433,6 +434,32 @@ void blendPixel(int x, int y, uint16_t color, uint8_t alpha) {
   if (x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
   const int index = y * kWidth + x;
   frame[index] = blend565(frame[index], color, alpha);
+}
+
+void blendEmbeddedMap(uint8_t alpha) {
+  if (!frame) return;
+
+  int pixel = 0;
+  for (size_t i = 0; i + 4 < sizeof(kEmbeddedMapPacked); i += 5) {
+    uint64_t packed = 0;
+    for (int b = 0; b < 5; ++b) {
+      packed = (packed << 8) | pgm_read_byte(&kEmbeddedMapPacked[i + b]);
+    }
+
+    for (int shift = 35; shift >= 0; shift -= 5) {
+      if (pixel >= kWidth * kHeight) return;
+      const int x = pixel % kWidth;
+      const int y = pixel / kWidth;
+      const int dx = x - kRadarCx;
+      const int dy = y - kRadarCy;
+      if (dx * dx + dy * dy <= (kRadarRadius - 2) * (kRadarRadius - 2)) {
+        const uint8_t paletteIndex = static_cast<uint8_t>((packed >> shift) & 0x1F);
+        const uint16_t color = pgm_read_word(&kEmbeddedMapPalette[paletteIndex]);
+        frame[pixel] = blend565(frame[pixel], color, alpha);
+      }
+      ++pixel;
+    }
+  }
 }
 
 void drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
@@ -930,7 +957,6 @@ void drawRadarFrame() {
   const uint16_t softGreen = rgb565(76, 214, 114);
   const uint16_t glow = rgb565(42, 150, 62);
   const uint16_t dim = rgb565(5, 38, 30);
-  const uint16_t map = rgb565(12, 66, 42);
   const uint16_t panel = rgb565(1, 11, 10);
   const uint16_t text = rgb565(225, 244, 228);
 
@@ -950,8 +976,7 @@ void drawRadarFrame() {
   }
 
   fillCircle(cx, cy, r - 8, rgb565(1, 11, 12));
-  blendFillCircle(cx, cy, 194, rgb565(6, 43, 28), 50);
-  blendFillCircle(cx, cy, 118, rgb565(8, 56, 34), 38);
+  blendEmbeddedMap(236);
   if (mapReady && mapFrame) {
     for (int y = 0; y < kHeight; ++y) {
       for (int x = 0; x < kWidth; ++x) {
@@ -959,13 +984,13 @@ void drawRadarFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 220);
+          frame[index] = blend565(frame[index], mapFrame[index], 70);
         }
       }
     }
-  } else {
-    drawMapWatermark(map, rgb565(6, 54, 32), rgb565(28, 112, 66), rgb565(34, 132, 78), rgb565(7, 48, 28));
   }
+  blendFillCircle(cx, cy, 194, rgb565(6, 43, 28), 28);
+  blendFillCircle(cx, cy, 118, rgb565(8, 56, 34), 22);
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
