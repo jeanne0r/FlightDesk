@@ -28,12 +28,19 @@ constexpr int kLcdMosi = 1;
 constexpr int kBacklightPin = 6;
 
 constexpr uint8_t kExioLcdReset = 1;  // Waveshare LCD_RST = EXIO1
+constexpr uint8_t kExioTouchReset = 2;  // Waveshare TP_RST = EXIO2 in Arduino demo
 constexpr uint8_t kExioLcdCs = 3;     // Waveshare LCD_CS = EXIO3
 constexpr uint8_t kExioBuzzer = 8;    // Waveshare buzzer = EXIO8
 constexpr uint8_t kOutputMask =
     static_cast<uint8_t>((1U << (kExioLcdReset - 1)) |
+                         (1U << (kExioTouchReset - 1)) |
                          (1U << (kExioLcdCs - 1)) |
                          (1U << (kExioBuzzer - 1)));
+
+constexpr uint8_t kGt911Address = 0x5D;
+constexpr uint16_t kGt911ReadXyReg = 0x814E;
+constexpr uint16_t kGt911ProductIdReg = 0x8140;
+constexpr int kGt911IntPin = 16;
 
 spi_device_handle_t lcdSpi = nullptr;
 esp_lcd_panel_handle_t lcdPanel = nullptr;
@@ -42,7 +49,26 @@ uint16_t* frame = nullptr;
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
 uint32_t lastRadarMs = 0;
+uint32_t lastTouchPollMs = 0;
+uint32_t touchMarkerUntilMs = 0;
 float sweepDeg = -75.0f;
+bool touchWasDown = false;
+bool menuOpen = false;
+int selectedPlane = -1;
+uint16_t lastTouchX = 0;
+uint16_t lastTouchY = 0;
+
+struct RadarPlane {
+  int x;
+  int y;
+  int heading;
+  const char* callsign;
+};
+
+constexpr RadarPlane kPlanes[] = {
+    {122, 116, 32, "SWR3ZK"}, {342, 132, 120, "EZS51BG"}, {190, 310, 205, "AFR45RG"},
+    {318, 332, 292, "LOT4HT"}, {252, 162, 15, "HBK0J"}, {106, 262, 278, "BAW74"},
+    {388, 236, 86, "DLH8PN"}};
 
 void pcaWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kTca9554Address);
@@ -69,6 +95,31 @@ void setExio(uint8_t pin, bool high) {
   pcaWrite(0x01, output);
 }
 
+bool touchI2cRead(uint16_t reg, uint8_t* data, size_t len) {
+  Wire.beginTransmission(kGt911Address);
+  Wire.write(static_cast<uint8_t>(reg >> 8));
+  Wire.write(static_cast<uint8_t>(reg & 0xFF));
+  if (Wire.endTransmission(true) != 0) {
+    return false;
+  }
+  const uint8_t got = Wire.requestFrom(kGt911Address, static_cast<uint8_t>(len));
+  if (got != len) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    data[i] = Wire.read();
+  }
+  return true;
+}
+
+bool touchI2cWrite(uint16_t reg, uint8_t value) {
+  Wire.beginTransmission(kGt911Address);
+  Wire.write(static_cast<uint8_t>(reg >> 8));
+  Wire.write(static_cast<uint8_t>(reg & 0xFF));
+  Wire.write(value);
+  return Wire.endTransmission(true) == 0;
+}
+
 void initExio() {
   uint8_t output = 0xFF;
   output &= static_cast<uint8_t>(~(1U << (kExioLcdCs - 1)));      // LCD CS active
@@ -76,6 +127,52 @@ void initExio() {
   output &= static_cast<uint8_t>(~(1U << (kExioBuzzer - 1)));     // buzzer off
   pcaWrite(0x01, output);
   pcaWrite(0x03, static_cast<uint8_t>(0xFF & ~kOutputMask));
+}
+
+void initTouch() {
+  Serial.println("[TOUCH] Init GT911");
+  pinMode(kGt911IntPin, OUTPUT);
+  digitalWrite(kGt911IntPin, LOW);
+  setExio(kExioTouchReset, false);
+  delay(10);
+  setExio(kExioTouchReset, true);
+  delay(220);
+  digitalWrite(kGt911IntPin, HIGH);
+  pinMode(kGt911IntPin, INPUT);
+
+  uint8_t product[4] = {};
+  if (touchI2cRead(kGt911ProductIdReg, product, 4)) {
+    Serial.printf("[TOUCH] GT911 product=%c%c%c%c\n", product[0], product[1], product[2], product[3]);
+  } else {
+    Serial.println("[TOUCH] GT911 absent ou lecture KO");
+  }
+}
+
+bool readTouch(uint16_t& x, uint16_t& y) {
+  uint8_t status = 0;
+  if (!touchI2cRead(kGt911ReadXyReg, &status, 1)) {
+    return false;
+  }
+  if ((status & 0x80) == 0) {
+    return false;
+  }
+  const uint8_t points = status & 0x0F;
+  if (points == 0 || points > 5) {
+    touchI2cWrite(kGt911ReadXyReg, 0);
+    return false;
+  }
+
+  uint8_t data[8] = {};
+  if (!touchI2cRead(kGt911ReadXyReg + 1, data, sizeof(data))) {
+    touchI2cWrite(kGt911ReadXyReg, 0);
+    return false;
+  }
+  touchI2cWrite(kGt911ReadXyReg, 0);
+  x = static_cast<uint16_t>(data[1] << 8 | data[0]);
+  y = static_cast<uint16_t>(data[3] << 8 | data[2]);
+  if (x >= kWidth) x = kWidth - 1;
+  if (y >= kHeight) y = kHeight - 1;
+  return true;
 }
 
 void lcdWriteCommand(uint8_t cmd) {
@@ -381,6 +478,32 @@ void drawTextCentered(int cx, int y, const char* text, uint16_t color, int scale
   drawText(cx - textWidth(text, scale) / 2, y, text, color, scale);
 }
 
+void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
+  fillRoundRect(118, 116, 244, 226, 24, panel);
+  drawRoundRect(118, 116, 244, 226, 24, green);
+  drawTextCentered(240, 144, "MENU", green, 3);
+  drawRoundRect(154, 178, 172, 42, 14, green);
+  drawTextCentered(240, 191, "RADAR", text, 2);
+  drawRoundRect(154, 234, 172, 42, 14, green);
+  drawTextCentered(240, 247, "REGLAGES", text, 2);
+  drawRoundRect(154, 290, 172, 42, 14, green);
+  drawTextCentered(240, 303, "FERMER", text, 2);
+}
+
+void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
+  if (selectedPlane < 0 || selectedPlane >= static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0]))) return;
+  const RadarPlane& plane = kPlanes[selectedPlane];
+  fillRoundRect(84, 136, 312, 188, 18, panel);
+  drawRoundRect(84, 136, 312, 188, 18, green);
+  drawText(112, 162, "AVION SELECTIONNE", green, 2);
+  drawText(112, 198, plane.callsign, green, 4);
+  drawText(112, 244, "AIRBUS A320", text, 2);
+  drawText(112, 276, "24KM  760KMH", text, 2);
+  drawText(112, 300, "3200M  218DEG", text, 2);
+  drawRoundRect(328, 152, 42, 42, 14, green);
+  drawTextCentered(349, 164, "X", text, 3);
+}
+
 void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_t color) {
   constexpr float stepDeg = 3.0f;
   for (float a = startDeg; a < endDeg; a += stepDeg) {
@@ -463,24 +586,27 @@ void drawRadarFrame() {
                 cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
                 green);
 
-  const int planes[][3] = {
-      {122, 116, 32}, {342, 132, 120}, {190, 310, 205}, {318, 332, 292},
-      {252, 162, 15}, {106, 262, 278}, {388, 236, 86}};
-  for (const auto& p : planes) {
-    const float ar = p[2] * DEG_TO_RAD;
-    const int x = p[0];
-    const int y = p[1];
+  int planeIndex = 0;
+  for (const auto& p : kPlanes) {
+    const float ar = p.heading * DEG_TO_RAD;
+    const int x = p.x;
+    const int y = p.y;
     const int noseX = x + static_cast<int>(cosf(ar) * 17);
     const int noseY = y + static_cast<int>(sinf(ar) * 17);
     const int leftX = x + static_cast<int>(cosf(ar + 2.55f) * 10);
     const int leftY = y + static_cast<int>(sinf(ar + 2.55f) * 10);
     const int rightX = x + static_cast<int>(cosf(ar - 2.55f) * 10);
     const int rightY = y + static_cast<int>(sinf(ar - 2.55f) * 10);
-    fillCircle(x, y, 11, rgb565(0, 34, 18));
+    if (planeIndex == selectedPlane) {
+      drawCircle(x, y, 24, green);
+      drawThickLine(cx, cy, x, y, glow);
+    }
+    fillCircle(x, y, planeIndex == selectedPlane ? 14 : 11, rgb565(0, 34, 18));
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(2, 18, 10));
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, softGreen);
     drawLine(noseX, noseY, leftX, leftY, green);
     drawLine(noseX, noseY, rightX, rightY, green);
+    ++planeIndex;
   }
 
   drawTextCentered(cx, 54, "18:47", text, 3);
@@ -495,9 +621,21 @@ void drawRadarFrame() {
   drawCircle(cx, cy, 10, green);
   drawCircle(cx, cy, 18, dim);
 
-  fillRoundRect(176, 388, 128, 46, 17, panel);
-  drawRoundRect(176, 388, 128, 46, 17, green);
-  drawTextCentered(cx, 405, "MENU", text, 3);
+  if (menuOpen) {
+    drawMenuPanel(green, text, panel);
+  } else if (selectedPlane >= 0) {
+    drawAircraftPopup(green, text, panel);
+  } else {
+    fillRoundRect(176, 388, 128, 46, 17, panel);
+    drawRoundRect(176, 388, 128, 46, 17, green);
+    drawTextCentered(cx, 405, "MENU", text, 3);
+  }
+
+  if (millis() < touchMarkerUntilMs) {
+    drawCircle(lastTouchX, lastTouchY, 18, rgb565(255, 255, 255));
+    drawLine(lastTouchX - 24, lastTouchY, lastTouchX + 24, lastTouchY, rgb565(255, 255, 255));
+    drawLine(lastTouchX, lastTouchY - 24, lastTouchX, lastTouchY + 24, rgb565(255, 255, 255));
+  }
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
 }
@@ -671,6 +809,71 @@ void printStatus() {
                 WiFi.status() == WL_CONNECTED ? "ok" : "ko");
 }
 
+bool inRect(uint16_t x, uint16_t y, int rx, int ry, int rw, int rh) {
+  return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+}
+
+int nearestPlaneAt(uint16_t x, uint16_t y) {
+  int best = -1;
+  int bestD2 = 34 * 34;
+  for (int i = 0; i < static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0])); ++i) {
+    const int dx = static_cast<int>(x) - kPlanes[i].x;
+    const int dy = static_cast<int>(y) - kPlanes[i].y;
+    const int d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = i;
+    }
+  }
+  return best;
+}
+
+void handleTap(uint16_t x, uint16_t y) {
+  lastTouchX = x;
+  lastTouchY = y;
+  touchMarkerUntilMs = millis() + 900;
+  Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
+
+  if (menuOpen) {
+    if (inRect(x, y, 154, 178, 172, 42) || inRect(x, y, 154, 290, 172, 42)) {
+      menuOpen = false;
+      selectedPlane = -1;
+    }
+    return;
+  }
+
+  if (selectedPlane >= 0) {
+    if (inRect(x, y, 308, 132, 84, 84) || inRect(x, y, 328, 152, 42, 42)) {
+      selectedPlane = -1;
+      return;
+    }
+    if (!inRect(x, y, 84, 136, 312, 188)) {
+      selectedPlane = -1;
+    }
+    return;
+  }
+
+  if (inRect(x, y, 154, 370, 172, 86)) {
+    menuOpen = true;
+    return;
+  }
+
+  const int plane = nearestPlaneAt(x, y);
+  if (plane >= 0) {
+    selectedPlane = plane;
+  }
+}
+
+void pollTouch() {
+  uint16_t x = 0;
+  uint16_t y = 0;
+  const bool down = readTouch(x, y);
+  if (down && !touchWasDown) {
+    handleTap(x, y);
+  }
+  touchWasDown = down;
+}
+
 }  // namespace
 
 void setup() {
@@ -681,6 +884,7 @@ void setup() {
   Wire.begin(kI2cSda, kI2cScl, 400000);
   scanI2c();
   initDisplay();
+  initTouch();
   connectWifi();
   printStatus();
 }
@@ -696,6 +900,11 @@ void loop() {
   if (now - lastI2cScanMs >= 30000) {
     lastI2cScanMs = now;
     scanI2c();
+  }
+
+  if (now - lastTouchPollMs >= 30) {
+    lastTouchPollMs = now;
+    pollTouch();
   }
 
   if (now - lastRadarMs >= 300) {
