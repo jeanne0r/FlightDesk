@@ -1,7 +1,9 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <PNGdec.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <Wire.h>
 
 #include "driver/spi_master.h"
@@ -86,6 +88,8 @@ float accY = 0.0f;
 float accZ = 0.0f;
 bool mapReady = false;
 bool mapFetchInProgress = false;
+uint32_t lastTrafficFetchMs = 0;
+bool trafficLive = false;
 
 constexpr double kHomeLat = 46.5096;
 constexpr double kHomeLon = 6.3077;
@@ -101,12 +105,50 @@ struct RadarPlane {
   int y;
   int heading;
   const char* callsign;
+  const char* type;
+  const char* route;
+  int distanceKm;
+  int altitudeM;
+  int speedKmh;
 };
 
 constexpr RadarPlane kPlanes[] = {
-    {122, 116, 32, "SWR3ZK"}, {342, 132, 120, "EZS51BG"}, {190, 310, 205, "AFR45RG"},
-    {318, 332, 292, "LOT4HT"}, {252, 162, 15, "HBK0J"}, {106, 262, 278, "BAW74"},
-    {388, 236, 86, "DLH8PN"}};
+    {122, 116, 32, "SWR3ZK", "AIRBUS A320", "Zurich -> Geneva", 24, 3200, 760},
+    {342, 132, 120, "EZS51BG", "AIRBUS A320", "Nice -> Geneva", 36, 2100, 620},
+    {190, 310, 205, "AFR45RG", "AIRBUS A320", "Athens -> Paris", 18, 12276, 840},
+    {318, 332, 292, "LOT4HT", "BOEING 737", "Warsaw -> Geneva", 42, 6700, 690},
+    {252, 162, 15, "HBK0J", "PILATUS PC-12", "Lausanne -> Sion", 8, 1450, 390},
+    {106, 262, 278, "BAW74", "AIRBUS A319", "London -> Geneva", 28, 9100, 720},
+    {388, 236, 86, "DLH8PN", "EMBRAER 195", "Munich -> Geneva", 50, 7800, 650}};
+
+struct LivePlane {
+  int x;
+  int y;
+  int heading;
+  char hex[8];
+  char callsign[12];
+  char type[20];
+  char route[36];
+  char photo[16];
+  int distanceKm;
+  int altitudeM;
+  int speedKmh;
+  bool enriched;
+};
+
+constexpr int kMaxLivePlanes = 36;
+LivePlane livePlanes[kMaxLivePlanes];
+int livePlaneCount = 0;
+
+enum class AppView : uint8_t {
+  Radar,
+  Search,
+  Favorites,
+  Settings,
+  Assistant
+};
+
+AppView appView = AppView::Radar;
 
 void pcaWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kTca9554Address);
@@ -714,6 +756,248 @@ void fetchMapTiles() {
   Serial.printf("[MAP] Tiles %d/%d ready=%d\n", ok, total, mapReady);
 }
 
+double distanceKm(double lat1, double lon1, double lat2, double lon2) {
+  const double dLat = (lat2 - lat1) * DEG_TO_RAD;
+  const double dLon = (lon2 - lon1) * DEG_TO_RAD;
+  const double a = sin(dLat / 2.0) * sin(dLat / 2.0) +
+                   cos(lat1 * DEG_TO_RAD) * cos(lat2 * DEG_TO_RAD) *
+                       sin(dLon / 2.0) * sin(dLon / 2.0);
+  return 6371.0 * 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+}
+
+double bearingDeg(double lat1, double lon1, double lat2, double lon2) {
+  const double y = sin((lon2 - lon1) * DEG_TO_RAD) * cos(lat2 * DEG_TO_RAD);
+  const double x = cos(lat1 * DEG_TO_RAD) * sin(lat2 * DEG_TO_RAD) -
+                   sin(lat1 * DEG_TO_RAD) * cos(lat2 * DEG_TO_RAD) *
+                       cos((lon2 - lon1) * DEG_TO_RAD);
+  double bearing = atan2(y, x) / DEG_TO_RAD;
+  if (bearing < 0.0) bearing += 360.0;
+  return bearing;
+}
+
+void copyClean(char* dst, size_t dstLen, const char* src, const char* fallback) {
+  if (!dst || dstLen == 0) return;
+  const char* value = (src && strlen(src)) ? src : fallback;
+  size_t out = 0;
+  while (value && value[0] && out + 1 < dstLen) {
+    const char c = *value++;
+    if (c >= 32 && c <= 126) {
+      dst[out++] = c;
+    }
+  }
+  while (out > 0 && dst[out - 1] == ' ') --out;
+  dst[out] = '\0';
+}
+
+const char* airportCity(const char* code) {
+  if (!code || strlen(code) < 3) return nullptr;
+  if (!strncmp(code, "GVA", 3)) return "Geneva";
+  if (!strncmp(code, "ZRH", 3)) return "Zurich";
+  if (!strncmp(code, "BSL", 3)) return "Basel";
+  if (!strncmp(code, "CDG", 3) || !strncmp(code, "ORY", 3)) return "Paris";
+  if (!strncmp(code, "NCE", 3)) return "Nice";
+  if (!strncmp(code, "LHR", 3) || !strncmp(code, "LGW", 3)) return "London";
+  if (!strncmp(code, "AMS", 3)) return "Amsterdam";
+  if (!strncmp(code, "FRA", 3)) return "Frankfurt";
+  if (!strncmp(code, "MUC", 3)) return "Munich";
+  if (!strncmp(code, "MAD", 3)) return "Madrid";
+  if (!strncmp(code, "BCN", 3)) return "Barcelona";
+  if (!strncmp(code, "ATH", 3)) return "Athens";
+  if (!strncmp(code, "MXP", 3) || !strncmp(code, "LIN", 3)) return "Milan";
+  if (!strncmp(code, "WAW", 3)) return "Warsaw";
+  return nullptr;
+}
+
+void formatRoute(char* dst, size_t dstLen, const char* rawRoute) {
+  if (!rawRoute || !strlen(rawRoute)) {
+    copyClean(dst, dstLen, "Depart -> Arrivee inconnus", "");
+    return;
+  }
+
+  char route[24];
+  copyClean(route, sizeof(route), rawRoute, "");
+  char* sep = strchr(route, '-');
+  if (!sep) sep = strchr(route, '>');
+  if (!sep || sep == route || !sep[1]) {
+    copyClean(dst, dstLen, route, "Depart -> Arrivee inconnus");
+    return;
+  }
+  *sep = '\0';
+  const char* from = airportCity(route);
+  const char* to = airportCity(sep + 1);
+  snprintf(dst, dstLen, "%s -> %s", from ? from : route, to ? to : sep + 1);
+}
+
+const RadarPlane& fallbackPlane(int index) {
+  return kPlanes[index % (sizeof(kPlanes) / sizeof(kPlanes[0]))];
+}
+
+int aircraftCount() {
+  return trafficLive && livePlaneCount > 0 ? livePlaneCount
+                                           : static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0]));
+}
+
+int planeX(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].x : fallbackPlane(index).x;
+}
+
+int planeY(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].y : fallbackPlane(index).y;
+}
+
+int planeHeading(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].heading : fallbackPlane(index).heading;
+}
+
+const char* planeCallsign(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].callsign : fallbackPlane(index).callsign;
+}
+
+const char* planeType(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].type : fallbackPlane(index).type;
+}
+
+const char* planeRoute(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].route : fallbackPlane(index).route;
+}
+
+int planeDistanceKm(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].distanceKm : fallbackPlane(index).distanceKm;
+}
+
+int planeAltitudeM(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].altitudeM : fallbackPlane(index).altitudeM;
+}
+
+int planeSpeedKmh(int index) {
+  return trafficLive && livePlaneCount > 0 ? livePlanes[index].speedKmh : fallbackPlane(index).speedKmh;
+}
+
+void fetchTraffic() {
+  if (WiFi.status() != WL_CONNECTED) {
+    trafficLive = false;
+    return;
+  }
+
+  char url[128];
+  const int radiusNm = max(1, static_cast<int>(round(kRangeKm / 1.852)));
+  snprintf(url, sizeof(url), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
+           kHomeLat, kHomeLon, radiusNm);
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
+  http.setTimeout(9000);
+  if (!http.begin(client, url)) {
+    Serial.println("[TRAFFIC] HTTP begin KO");
+    trafficLive = false;
+    return;
+  }
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[TRAFFIC] HTTP KO code=%d\n", code);
+    http.end();
+    trafficLive = false;
+    return;
+  }
+
+  const String payload = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.printf("[TRAFFIC] JSON KO %s bytes=%u\n", err.c_str(), payload.length());
+    trafficLive = false;
+    return;
+  }
+
+  JsonArray aircraft = doc["ac"].as<JsonArray>();
+  int count = 0;
+  for (JsonObject ac : aircraft) {
+    if (count >= kMaxLivePlanes) break;
+    if (!ac["lat"].is<double>() || !ac["lon"].is<double>()) continue;
+
+    const double lat = ac["lat"].as<double>();
+    const double lon = ac["lon"].as<double>();
+    const double dist = distanceKm(kHomeLat, kHomeLon, lat, lon);
+    if (dist > kRangeKm || dist < 0.1) continue;
+    const double bearing = bearingDeg(kHomeLat, kHomeLon, lat, lon);
+    const double posR = (dist / kRangeKm) * (kRadarRadius - 26);
+    LivePlane& p = livePlanes[count];
+    p.x = kRadarCx + static_cast<int>(sin(bearing * DEG_TO_RAD) * posR);
+    p.y = kRadarCy - static_cast<int>(cos(bearing * DEG_TO_RAD) * posR);
+    p.heading = static_cast<int>(round(ac["track"] | ac["true_heading"] | bearing)) - 90;
+    copyClean(p.hex, sizeof(p.hex), ac["hex"] | "", "");
+    copyClean(p.callsign, sizeof(p.callsign), ac["flight"] | ac["r"] | ac["hex"] | "", "VOL");
+    copyClean(p.type, sizeof(p.type), ac["t"] | ac["desc"] | "", "TYPE INCONNU");
+    formatRoute(p.route, sizeof(p.route), ac["route"] | "");
+    copyClean(p.photo, sizeof(p.photo), "", "PHOTO ?");
+    p.distanceKm = static_cast<int>(round(dist));
+    p.altitudeM = static_cast<int>(round((ac["alt_baro"] | ac["alt_geom"] | 0) * 0.3048));
+    p.speedKmh = static_cast<int>(round((ac["gs"] | 0) * 1.852));
+    p.enriched = false;
+    ++count;
+  }
+
+  livePlaneCount = count;
+  trafficLive = count > 0;
+  if (selectedPlane >= aircraftCount()) selectedPlane = -1;
+  Serial.printf("[TRAFFIC] %d avion(s) live via airplanes.live\n", livePlaneCount);
+}
+
+bool httpsGetJson(const char* url, JsonDocument& doc) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
+  http.setTimeout(7000);
+  if (!http.begin(client, url)) return false;
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+  const String payload = http.getString();
+  http.end();
+  return !deserializeJson(doc, payload);
+}
+
+void enrichPlane(int index) {
+  if (!trafficLive || index < 0 || index >= livePlaneCount || livePlanes[index].enriched) return;
+  LivePlane& p = livePlanes[index];
+
+  char url[128];
+  JsonDocument doc;
+  snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/callsign/%s", p.callsign);
+  if (httpsGetJson(url, doc)) {
+    const char* from = doc["response"]["flightroute"]["origin"]["municipality"] | nullptr;
+    const char* to = doc["response"]["flightroute"]["destination"]["municipality"] | nullptr;
+    if (from && to) {
+      snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
+    }
+  }
+
+  if (strlen(p.hex)) {
+    doc.clear();
+    snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/aircraft/%s", p.hex);
+    if (httpsGetJson(url, doc)) {
+      const char* photo = doc["response"]["aircraft"]["url_photo_thumbnail"] | nullptr;
+      if (photo && strlen(photo)) {
+        copyClean(p.photo, sizeof(p.photo), "PHOTO OK", "PHOTO OK");
+      }
+      const char* type = doc["response"]["aircraft"]["type"] | nullptr;
+      if (type && strlen(type)) {
+        copyClean(p.type, sizeof(p.type), type, p.type);
+      }
+    }
+  }
+
+  p.enriched = true;
+}
+
 void fillRect(int x, int y, int w, int h, uint16_t color) {
   for (int yy = y; yy < y + h; ++yy) {
     for (int xx = x; xx < x + w; ++xx) {
@@ -880,33 +1164,72 @@ void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
-  fillRoundRect(108, 106, 264, 244, 22, panel);
-  drawRoundRect(108, 106, 264, 244, 22, rgb565(68, 190, 92));
-  drawTextCentered(240, 134, "MENU", green, 3);
-  fillRoundRect(144, 174, 192, 42, 14, rgb565(2, 20, 15));
-  drawRoundRect(144, 174, 192, 42, 14, rgb565(70, 220, 104));
-  drawTextCentered(240, 187, "RADAR", text, 2);
-  fillRoundRect(144, 228, 192, 42, 14, rgb565(2, 20, 15));
-  drawRoundRect(144, 228, 192, 42, 14, rgb565(70, 220, 104));
-  drawTextCentered(240, 241, "REGLAGES", text, 2);
-  fillRoundRect(144, 282, 192, 42, 14, rgb565(2, 20, 15));
-  drawRoundRect(144, 282, 192, 42, 14, rgb565(70, 220, 104));
-  drawTextCentered(240, 295, "FERMER", text, 2);
+  fillRoundRect(72, 96, 336, 276, 22, panel);
+  drawRoundRect(72, 96, 336, 276, 22, rgb565(68, 190, 92));
+  if (appView == AppView::Settings) {
+    drawTextCentered(240, 120, "REGLAGES", green, 2);
+    drawText(108, 154, "NPA", green, 2);
+    drawText(210, 154, "1188", text, 2);
+    drawText(108, 188, "RAYON", green, 2);
+    drawText(210, 188, "50 KM", text, 2);
+    drawText(108, 222, "WIFI", green, 2);
+    drawText(210, 222, WiFi.status() == WL_CONNECTED ? "OK" : "KO", text, 2);
+    drawText(108, 256, "SOURCE", green, 2);
+    drawText(210, 256, trafficLive ? "LIVE" : "SIM", text, 2);
+    fillRoundRect(144, 304, 192, 42, 14, rgb565(2, 20, 15));
+    drawRoundRect(144, 304, 192, 42, 14, rgb565(70, 220, 104));
+    drawTextCentered(240, 317, "FERMER", text, 2);
+    return;
+  }
+
+  if (appView == AppView::Search) {
+    drawTextCentered(240, 122, "RECHERCHE", green, 2);
+    drawText(112, 170, "Touchez un avion", text, 2);
+    drawText(112, 200, "pour afficher le vol.", text, 2);
+    drawText(112, 246, "Recherche texte a venir", green, 1);
+  } else if (appView == AppView::Favorites) {
+    drawTextCentered(240, 122, "FAVORIS", green, 2);
+    drawText(112, 170, "Aucun favori local", text, 2);
+    drawText(112, 206, "Etoile dans popup.", green, 1);
+  } else {
+    drawTextCentered(240, 122, "ASSISTANT IA", green, 2);
+    drawText(112, 168, "Version simple", text, 2);
+    drawText(112, 198, "sans audio ici.", text, 2);
+  }
+  fillRoundRect(144, 304, 192, 42, 14, rgb565(2, 20, 15));
+  drawRoundRect(144, 304, 192, 42, 14, rgb565(70, 220, 104));
+  drawTextCentered(240, 317, "FERMER", text, 2);
 }
 
 void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
-  if (selectedPlane < 0 || selectedPlane >= static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0]))) return;
-  const RadarPlane& plane = kPlanes[selectedPlane];
-  fillRoundRect(78, 132, 324, 196, 18, panel);
-  drawRoundRect(78, 132, 324, 196, 18, rgb565(76, 210, 102));
-  drawText(108, 158, "AVION SELECTIONNE", green, 2);
-  drawText(108, 194, plane.callsign, green, 4);
-  drawText(108, 240, "AIRBUS A320", text, 2);
-  drawText(108, 274, "24KM  760KMH", text, 2);
-  drawText(108, 298, "3200M  218DEG", text, 2);
-  fillRoundRect(332, 150, 44, 44, 15, rgb565(2, 24, 16));
-  drawRoundRect(332, 150, 44, 44, 15, green);
-  drawTextCentered(354, 162, "X", text, 3);
+  if (selectedPlane < 0 || selectedPlane >= aircraftCount()) return;
+  char line[40];
+  fillRoundRect(52, 124, 376, 214, 18, panel);
+  drawRoundRect(52, 124, 376, 214, 18, rgb565(76, 210, 102));
+  drawText(82, 148, "AVION SELECTIONNE", green, 2);
+  drawText(82, 184, planeCallsign(selectedPlane), green, 4);
+  drawText(82, 232, planeType(selectedPlane), text, 2);
+  drawText(82, 260, planeRoute(selectedPlane), text, 1);
+  snprintf(line, sizeof(line), "%dKM  %dKMH", planeDistanceKm(selectedPlane), planeSpeedKmh(selectedPlane));
+  drawText(82, 288, line, text, 2);
+  snprintf(line, sizeof(line), "%dM  %dDEG", planeAltitudeM(selectedPlane), planeHeading(selectedPlane) + 90);
+  drawText(82, 312, line, text, 2);
+
+  fillRoundRect(286, 218, 106, 70, 12, rgb565(8, 32, 26));
+  drawRoundRect(286, 218, 106, 70, 12, rgb565(88, 220, 116));
+  drawTextCentered(339, 240, "PHOTO", green, 1);
+  drawTextCentered(339, 258, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
+  const int px = 338;
+  const int py = 274;
+  drawThickLine(px - 34, py, px + 34, py - 12, green);
+  drawThickLine(px - 4, py - 4, px + 20, py + 15, green);
+
+  fillRoundRect(336, 144, 34, 34, 13, rgb565(2, 24, 16));
+  drawRoundRect(336, 144, 34, 34, 13, green);
+  drawTextCentered(353, 153, "*", text, 2);
+  fillRoundRect(378, 144, 34, 34, 13, rgb565(2, 24, 16));
+  drawRoundRect(378, 144, 34, 34, 13, green);
+  drawTextCentered(395, 153, "X", text, 2);
 }
 
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
@@ -918,7 +1241,7 @@ void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
   constexpr int y = 356;
   for (int i = 0; i < 5; ++i) {
     const int x = startX + i * (width + gap);
-    const bool active = i == 0;
+    const bool active = static_cast<int>(appView) == i;
     fillRoundRect(x, y, width, height, 12, active ? rgb565(4, 28, 18) : panel);
     drawRoundRect(x, y, width, height, 12, active ? green : rgb565(20, 58, 38));
     drawTextCentered(x + width / 2, y + 10, labels[i], active ? green : rgb565(178, 206, 188), 1);
@@ -976,7 +1299,7 @@ void drawRadarFrame() {
   }
 
   fillCircle(cx, cy, r - 8, rgb565(1, 11, 12));
-  blendEmbeddedMap(236);
+  blendEmbeddedMap(176);
   if (mapReady && mapFrame) {
     for (int y = 0; y < kHeight; ++y) {
       for (int x = 0; x < kWidth; ++x) {
@@ -984,13 +1307,14 @@ void drawRadarFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 70);
+          frame[index] = blend565(frame[index], mapFrame[index], 24);
         }
       }
     }
   }
-  blendFillCircle(cx, cy, 194, rgb565(6, 43, 28), 28);
-  blendFillCircle(cx, cy, 118, rgb565(8, 56, 34), 22);
+  blendFillCircle(cx, cy, 204, rgb565(0, 8, 8), 72);
+  blendFillCircle(cx, cy, 194, rgb565(6, 43, 28), 22);
+  blendFillCircle(cx, cy, 118, rgb565(8, 56, 34), 16);
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
@@ -1016,11 +1340,11 @@ void drawRadarFrame() {
                  cy + static_cast<int>(sinf(sweepRad) * (r - 8)),
                  green, 205);
 
-  int planeIndex = 0;
-  for (const auto& p : kPlanes) {
-    const float ar = p.heading * DEG_TO_RAD;
-    const int x = p.x;
-    const int y = p.y;
+  const int count = aircraftCount();
+  for (int planeIndex = 0; planeIndex < count; ++planeIndex) {
+    const float ar = planeHeading(planeIndex) * DEG_TO_RAD;
+    const int x = planeX(planeIndex);
+    const int y = planeY(planeIndex);
     const int noseX = x + static_cast<int>(cosf(ar) * 17);
     const int noseY = y + static_cast<int>(sinf(ar) * 17);
     const int leftX = x + static_cast<int>(cosf(ar + 2.55f) * 10);
@@ -1036,12 +1360,13 @@ void drawRadarFrame() {
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(205, 255, 202));
     drawLine(noseX, noseY, leftX, leftY, green);
     drawLine(noseX, noseY, rightX, rightY, green);
-    ++planeIndex;
   }
 
+  char countText[12];
+  snprintf(countText, sizeof(countText), "%d", count);
   drawTextCentered(cx, 48, "18:47", text, 1);
-  drawTextCentered(cx, 67, "LIVE OPENSKY", softGreen, 1);
-  drawTextCentered(cx, 88, "7", green, 3);
+  drawTextCentered(cx, 67, trafficLive ? "LIVE AIRPLANES" : "TRAFIC SIMULE", softGreen, 1);
+  drawTextCentered(cx, 88, countText, green, 3);
   drawTextCentered(cx, 120, "AVIONS", green, 2);
   drawText(cx + r * 41 / 100, cy + 3, "20", softGreen, 1);
   drawText(cx + r * 72 / 100, cy + 3, "50", softGreen, 1);
@@ -1051,7 +1376,7 @@ void drawRadarFrame() {
   drawCircle(cx, cy, 10, green);
   drawCircle(cx, cy, 16, dim);
 
-  if (menuOpen) {
+  if (appView != AppView::Radar) {
     drawMenuPanel(green, text, panel);
   } else if (selectedPlane >= 0) {
     drawAircraftPopup(green, text, panel);
@@ -1259,9 +1584,9 @@ bool inRect(uint16_t x, uint16_t y, int rx, int ry, int rw, int rh) {
 int nearestPlaneAt(uint16_t x, uint16_t y) {
   int best = -1;
   int bestD2 = 34 * 34;
-  for (int i = 0; i < static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0])); ++i) {
-    const int dx = static_cast<int>(x) - kPlanes[i].x;
-    const int dy = static_cast<int>(y) - kPlanes[i].y;
+  for (int i = 0; i < aircraftCount(); ++i) {
+    const int dx = static_cast<int>(x) - planeX(i);
+    const int dy = static_cast<int>(y) - planeY(i);
     const int d2 = dx * dx + dy * dy;
     if (d2 < bestD2) {
       bestD2 = d2;
@@ -1277,32 +1602,37 @@ void handleTap(uint16_t x, uint16_t y) {
   touchMarkerUntilMs = millis() + 900;
   Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
 
-  if (menuOpen) {
-    if (inRect(x, y, 154, 178, 172, 42) || inRect(x, y, 154, 290, 172, 42)) {
-      menuOpen = false;
+  if (appView != AppView::Radar) {
+    if (inRect(x, y, 130, 292, 220, 68) || inRect(x, y, 88, 348, 304, 56)) {
+      appView = AppView::Radar;
       selectedPlane = -1;
     }
     return;
   }
 
   if (selectedPlane >= 0) {
-    if (inRect(x, y, 308, 132, 84, 84) || inRect(x, y, 328, 152, 42, 42)) {
+    if (inRect(x, y, 368, 132, 58, 58) || inRect(x, y, 378, 144, 34, 34)) {
       selectedPlane = -1;
       return;
     }
-    if (!inRect(x, y, 84, 136, 312, 188)) {
+    if (!inRect(x, y, 52, 124, 376, 214)) {
       selectedPlane = -1;
     }
     return;
   }
 
-  if (inRect(x, y, 263, 344, 72, 56)) {
-    menuOpen = true;
-    return;
-  }
-  if (inRect(x, y, 93, 344, 72, 56) || inRect(x, y, 149, 344, 72, 56) ||
-      inRect(x, y, 205, 344, 72, 56) || inRect(x, y, 319, 344, 72, 56)) {
-    menuOpen = false;
+  if (inRect(x, y, 93, 344, 314, 58)) {
+    if (x < 157) {
+      appView = AppView::Radar;
+    } else if (x < 213) {
+      appView = AppView::Search;
+    } else if (x < 269) {
+      appView = AppView::Favorites;
+    } else if (x < 325) {
+      appView = AppView::Settings;
+    } else {
+      appView = AppView::Assistant;
+    }
     selectedPlane = -1;
     return;
   }
@@ -1310,6 +1640,7 @@ void handleTap(uint16_t x, uint16_t y) {
   const int plane = nearestPlaneAt(x, y);
   if (plane >= 0) {
     selectedPlane = plane;
+    enrichPlane(selectedPlane);
   }
 }
 
@@ -1366,6 +1697,17 @@ void loop() {
     lastMapFetchMs = now;
     fetchMapTiles();
     drawRadarFrame();
+  }
+
+  if (WiFi.status() == WL_CONNECTED && now - bootMs >= 3000 &&
+      (lastTrafficFetchMs == 0 || now - lastTrafficFetchMs >= 20000)) {
+    lastTrafficFetchMs = now;
+    fetchTraffic();
+    drawRadarFrame();
+  } else if (WiFi.status() != WL_CONNECTED && trafficLive) {
+    trafficLive = false;
+    livePlaneCount = 0;
+    selectedPlane = -1;
   }
 
   if (now - lastI2cScanMs >= 30000) {
