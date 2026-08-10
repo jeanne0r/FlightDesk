@@ -73,6 +73,7 @@ uint32_t lastRadarMs = 0;
 uint32_t lastTouchPollMs = 0;
 uint32_t lastImuMs = 0;
 uint32_t lastMapFetchMs = 0;
+uint32_t mapReloadAfterMs = 0;
 uint32_t touchMarkerUntilMs = 0;
 uint32_t lastTouchLogMs = 0;
 uint32_t bootMs = 0;
@@ -98,6 +99,12 @@ bool setupPortalActive = false;
 char storedSsid[33] = "";
 char storedPassword[65] = "";
 uint32_t wifiReconnectAtMs = 0;
+bool dragCandidate = false;
+bool mapDragging = false;
+uint16_t touchStartX = 0;
+uint16_t touchStartY = 0;
+uint16_t dragLastX = 0;
+uint16_t dragLastY = 0;
 
 constexpr double kHomeLat = 46.5096;
 constexpr double kHomeLon = 6.3077;
@@ -107,6 +114,26 @@ constexpr int kRadarCy = 240;
 constexpr int kRadarRadius = 218;
 int pngTileScreenX = 0;
 int pngTileScreenY = 0;
+double radarLat = kHomeLat;
+double radarLon = kHomeLon;
+char currentPostal[8] = "1188";
+
+struct PostalPreset {
+  const char* code;
+  const char* label;
+  double lat;
+  double lon;
+};
+
+constexpr PostalPreset kPostalPresets[] = {
+    {"1188", "GIMEL", 46.5096, 6.3077},
+    {"1201", "GENEVE", 46.2100, 6.1420},
+    {"1003", "LAUSANNE", 46.5218, 6.6327},
+    {"1260", "NYON", 46.3833, 6.2396},
+    {"1110", "MORGES", 46.5110, 6.4985},
+    {"2000", "NEUCHATEL", 46.9918, 6.9310},
+    {"1700", "FRIBOURG", 46.8065, 7.1619}};
+int postalIndex = 0;
 
 struct RadarPlane {
   int x;
@@ -738,9 +765,9 @@ void fetchMapTiles() {
   if (!mapFrame || !tileBuffer || WiFi.status() != WL_CONNECTED || mapFetchInProgress) return;
   mapFetchInProgress = true;
   clearMapFrame();
-  const int zoom = zoomForRange(kHomeLat, kRangeKm, kRadarRadius);
-  const double centerX = lonToPixelX(kHomeLon, zoom);
-  const double centerY = latToPixelY(kHomeLat, zoom);
+  const int zoom = zoomForRange(radarLat, kRangeKm, kRadarRadius);
+  const double centerX = lonToPixelX(radarLon, zoom);
+  const double centerY = latToPixelY(radarLat, zoom);
   const double topLeftX = centerX - kRadarCx;
   const double topLeftY = centerY - kRadarCy;
   const int minTileX = floor(topLeftX / 256.0);
@@ -749,7 +776,7 @@ void fetchMapTiles() {
   const int maxTileY = floor((topLeftY + kHeight) / 256.0);
   int ok = 0;
   int total = 0;
-  Serial.printf("[MAP] Fetch OSM z=%d center=%.5f,%.5f\n", zoom, kHomeLat, kHomeLon);
+  Serial.printf("[MAP] Fetch OSM z=%d center=%.5f,%.5f npa=%s\n", zoom, radarLat, radarLon, currentPostal);
   for (int ty = minTileY; ty <= maxTileY; ++ty) {
     for (int tx = minTileX; tx <= maxTileX; ++tx) {
       const int screenX = static_cast<int>(round(tx * 256.0 - topLeftX));
@@ -892,7 +919,7 @@ void fetchTraffic() {
   char url[128];
   const int radiusNm = max(1, static_cast<int>(round(kRangeKm / 1.852)));
   snprintf(url, sizeof(url), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
-           kHomeLat, kHomeLon, radiusNm);
+           radarLat, radarLon, radiusNm);
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -931,9 +958,9 @@ void fetchTraffic() {
 
     const double lat = ac["lat"].as<double>();
     const double lon = ac["lon"].as<double>();
-    const double dist = distanceKm(kHomeLat, kHomeLon, lat, lon);
+    const double dist = distanceKm(radarLat, radarLon, lat, lon);
     if (dist > kRangeKm || dist < 0.1) continue;
-    const double bearing = bearingDeg(kHomeLat, kHomeLon, lat, lon);
+    const double bearing = bearingDeg(radarLat, radarLon, lat, lon);
     const double posR = (dist / kRangeKm) * (kRadarRadius - 26);
     LivePlane& p = livePlanes[count];
     p.x = kRadarCx + static_cast<int>(sin(bearing * DEG_TO_RAD) * posR);
@@ -1179,7 +1206,10 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   if (appView == AppView::Settings) {
     drawTextCentered(240, 120, "REGLAGES", green, 2);
     drawText(104, 150, "NPA", green, 2);
-    drawText(214, 150, "1188", text, 2);
+    drawText(188, 150, "<", green, 2);
+    drawText(224, 150, currentPostal, text, 2);
+    drawText(292, 150, ">", green, 2);
+    drawTextCentered(250, 170, strcmp(currentPostal, "MANUEL") == 0 ? "MANUEL" : kPostalPresets[postalIndex].label, text, 1);
     drawText(104, 178, "RAYON", green, 2);
     drawText(214, 178, "50 KM", text, 2);
     drawText(104, 206, "WIFI", green, 2);
@@ -1547,6 +1577,62 @@ const char* activeWifiPassword() {
   return strlen(storedSsid) ? storedPassword : FLIGHTDESK_WIFI_PASSWORD;
 }
 
+void applyPostalIndex(int index) {
+  const int count = sizeof(kPostalPresets) / sizeof(kPostalPresets[0]);
+  postalIndex = (index % count + count) % count;
+  copyClean(currentPostal, sizeof(currentPostal), kPostalPresets[postalIndex].code, "1188");
+  radarLat = kPostalPresets[postalIndex].lat;
+  radarLon = kPostalPresets[postalIndex].lon;
+}
+
+void saveLocationSettings() {
+  if (!prefs.begin("flightdesk", false)) {
+    Serial.println("[LOC] NVS ecriture KO");
+    return;
+  }
+  prefs.putString("npa", currentPostal);
+  prefs.putDouble("lat", radarLat);
+  prefs.putDouble("lon", radarLon);
+  prefs.end();
+}
+
+void loadLocationSettings() {
+  if (!prefs.begin("flightdesk", true)) {
+    Serial.println("[LOC] NVS lecture KO");
+    return;
+  }
+  const String npa = prefs.getString("npa", "1188");
+  const double lat = prefs.getDouble("lat", kHomeLat);
+  const double lon = prefs.getDouble("lon", kHomeLon);
+  prefs.end();
+
+  int preset = 0;
+  const int count = sizeof(kPostalPresets) / sizeof(kPostalPresets[0]);
+  for (int i = 0; i < count; ++i) {
+    if (npa == kPostalPresets[i].code) {
+      preset = i;
+      break;
+    }
+  }
+  postalIndex = preset;
+  copyClean(currentPostal, sizeof(currentPostal), npa.c_str(), "1188");
+  radarLat = lat;
+  radarLon = lon;
+}
+
+void changePostal(int delta) {
+  applyPostalIndex(postalIndex + delta);
+  saveLocationSettings();
+  mapReady = false;
+  mapReloadAfterMs = 0;
+  lastMapFetchMs = 0;
+  lastTrafficFetchMs = 0;
+  trafficLive = false;
+  livePlaneCount = 0;
+  selectedPlane = -1;
+  Serial.printf("[LOC] NPA %s %.5f,%.5f\n", currentPostal, radarLat, radarLon);
+}
+
 String htmlEscape(const char* value) {
   String out;
   while (value && *value) {
@@ -1696,6 +1782,43 @@ bool inRect(uint16_t x, uint16_t y, int rx, int ry, int rw, int rh) {
   return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
 }
 
+bool inRadarCircle(uint16_t x, uint16_t y) {
+  const int dx = static_cast<int>(x) - kRadarCx;
+  const int dy = static_cast<int>(y) - kRadarCy;
+  return dx * dx + dy * dy <= (kRadarRadius - 12) * (kRadarRadius - 12);
+}
+
+bool inBottomNav(uint16_t x, uint16_t y) {
+  return inRect(x, y, 93, 344, 314, 58);
+}
+
+void invalidateLiveData() {
+  mapReady = false;
+  mapReloadAfterMs = 0;
+  lastMapFetchMs = 0;
+  lastTrafficFetchMs = 0;
+  trafficLive = false;
+  livePlaneCount = 0;
+  selectedPlane = -1;
+}
+
+void moveMapByPixels(int dx, int dy) {
+  if (dx == 0 && dy == 0) return;
+  const double metersPerPixel = (kRangeKm * 1000.0) / max(1, kRadarRadius);
+  const double metersEast = -dx * metersPerPixel;
+  const double metersNorth = dy * metersPerPixel;
+  const double latMeters = 111320.0;
+  const double lonMeters = 111320.0 * fmax(0.2, cos(radarLat * DEG_TO_RAD));
+  radarLat += metersNorth / latMeters;
+  radarLon += metersEast / lonMeters;
+  radarLat = constrain(radarLat, -80.0, 80.0);
+  if (radarLon > 180.0) radarLon -= 360.0;
+  if (radarLon < -180.0) radarLon += 360.0;
+  copyClean(currentPostal, sizeof(currentPostal), "MANUEL", "MANUEL");
+  invalidateLiveData();
+  mapReloadAfterMs = millis() + 1200;
+}
+
 int nearestPlaneAt(uint16_t x, uint16_t y) {
   int best = -1;
   int bestD2 = 34 * 34;
@@ -1718,6 +1841,14 @@ void handleTap(uint16_t x, uint16_t y) {
   Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
 
   if (appView != AppView::Radar) {
+    if (appView == AppView::Settings && inRect(x, y, 162, 136, 64, 50)) {
+      changePostal(-1);
+      return;
+    }
+    if (appView == AppView::Settings && inRect(x, y, 274, 136, 64, 50)) {
+      changePostal(1);
+      return;
+    }
     if (appView == AppView::Settings && inRect(x, y, 116, 248, 248, 58)) {
       startWifiPortal();
       return;
@@ -1787,7 +1918,35 @@ void pollTouch() {
   }
   if (down && !touchWasDown) {
     ++touchCount;
-    handleTap(x, y);
+    touchStartX = x;
+    touchStartY = y;
+    dragLastX = x;
+    dragLastY = y;
+    mapDragging = false;
+    dragCandidate = appView == AppView::Radar && selectedPlane < 0 && inRadarCircle(x, y) && !inBottomNav(x, y);
+  } else if (down && touchWasDown && dragCandidate) {
+    const int totalDx = static_cast<int>(x) - static_cast<int>(touchStartX);
+    const int totalDy = static_cast<int>(y) - static_cast<int>(touchStartY);
+    if (!mapDragging && totalDx * totalDx + totalDy * totalDy > 9 * 9) {
+      mapDragging = true;
+      selectedPlane = -1;
+    }
+    if (mapDragging) {
+      const int dx = static_cast<int>(x) - static_cast<int>(dragLastX);
+      const int dy = static_cast<int>(y) - static_cast<int>(dragLastY);
+      moveMapByPixels(dx, dy);
+      dragLastX = x;
+      dragLastY = y;
+    }
+  } else if (!down && touchWasDown) {
+    if (mapDragging) {
+      saveLocationSettings();
+      Serial.printf("[MAP] Centre manuel %.5f,%.5f\n", radarLat, radarLon);
+    } else {
+      handleTap(touchStartX, touchStartY);
+    }
+    dragCandidate = false;
+    mapDragging = false;
   }
   touchWasDown = down;
 }
@@ -1805,6 +1964,7 @@ void setup() {
   initTouch();
   initImu();
   loadWifiSettings();
+  loadLocationSettings();
   connectWifi();
   bootMs = millis();
   printStatus();
@@ -1832,6 +1992,7 @@ void loop() {
   }
 
   if (!mapReady && WiFi.status() == WL_CONNECTED && now - bootMs >= 6000 &&
+      (mapReloadAfterMs == 0 || now >= mapReloadAfterMs) &&
       (lastMapFetchMs == 0 || now - lastMapFetchMs >= 60000)) {
     lastMapFetchMs = now;
     fetchMapTiles();
