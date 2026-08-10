@@ -1,5 +1,8 @@
 #include <Arduino.h>
+#include <HTTPClient.h>
+#include <PNGdec.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <Wire.h>
 
 #include "driver/spi_master.h"
@@ -53,12 +56,17 @@ constexpr uint8_t kQmi8658AxL = 0x35;
 spi_device_handle_t lcdSpi = nullptr;
 esp_lcd_panel_handle_t lcdPanel = nullptr;
 uint16_t* frame = nullptr;
+uint16_t* mapFrame = nullptr;
+uint8_t* tileBuffer = nullptr;
+size_t tileBufferSize = 0;
+PNG png;
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
 uint32_t lastRadarMs = 0;
 uint32_t lastTouchPollMs = 0;
 uint32_t lastImuMs = 0;
+uint32_t lastMapFetchMs = 0;
 uint32_t touchMarkerUntilMs = 0;
 uint32_t lastTouchLogMs = 0;
 float sweepDeg = -75.0f;
@@ -75,6 +83,14 @@ uint8_t gt911Address = kGt911AddressPrimary;
 float accX = 0.0f;
 float accY = 0.0f;
 float accZ = 0.0f;
+bool mapReady = false;
+bool mapFetchInProgress = false;
+
+constexpr double kHomeLat = 46.5096;
+constexpr double kHomeLon = 6.3077;
+constexpr int kRangeKm = 50;
+int pngTileScreenX = 0;
+int pngTileScreenY = 0;
 
 struct RadarPlane {
   int x;
@@ -514,6 +530,151 @@ void blendFillCircle(int cx, int cy, int r, uint16_t color, uint8_t alpha) {
   }
 }
 
+void putMapPixel(int x, int y, uint16_t color) {
+  if (!mapFrame || x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
+  mapFrame[y * kWidth + x] = color;
+}
+
+uint16_t radarTint(uint16_t rgb) {
+  const uint8_t r = ((rgb >> 11) & 0x1F) << 3;
+  const uint8_t g = ((rgb >> 5) & 0x3F) << 2;
+  const uint8_t b = (rgb & 0x1F) << 3;
+  const uint8_t lum = static_cast<uint8_t>((r * 30 + g * 59 + b * 11) / 100);
+  return rgb565(2 + lum / 18, 18 + lum / 4, 12 + lum / 8);
+}
+
+void clearMapFrame() {
+  if (!mapFrame) return;
+  for (int i = 0; i < kWidth * kHeight; ++i) {
+    mapFrame[i] = rgb565(1, 13, 10);
+  }
+}
+
+int pngDrawTile(PNGDRAW* draw) {
+  static uint16_t line[256];
+  png.getLineAsRGB565(draw, line, PNG_RGB565_LITTLE_ENDIAN, 0x00000000);
+  const int y = pngTileScreenY + draw->y;
+  if (y < 0 || y >= kHeight) return 1;
+  for (int x = 0; x < draw->iWidth; ++x) {
+    const int sx = pngTileScreenX + x;
+    if (sx < 0 || sx >= kWidth) continue;
+    putMapPixel(sx, y, radarTint(line[x]));
+  }
+  return 1;
+}
+
+double lonToPixelX(double lon, int zoom) {
+  const double scale = 256.0 * static_cast<double>(1UL << zoom);
+  return ((lon + 180.0) / 360.0) * scale;
+}
+
+double latToPixelY(double lat, int zoom) {
+  const double sinLat = sin(lat * DEG_TO_RAD);
+  const double scale = 256.0 * static_cast<double>(1UL << zoom);
+  return (0.5 - log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI)) * scale;
+}
+
+int zoomForRange(double lat, int rangeKm, int radiusPx) {
+  const double metersPerPixel = (rangeKm * 1000.0) / max(1, radiusPx);
+  const double target = 156543.03392 * cos(lat * DEG_TO_RAD) / metersPerPixel;
+  int zoom = static_cast<int>(round(log(target) / log(2.0)));
+  return constrain(zoom, 6, 13);
+}
+
+bool fetchTilePng(int z, int x, int y, int screenX, int screenY) {
+  if (!tileBuffer || WiFi.status() != WL_CONNECTED) return false;
+  const int tileCount = 1 << z;
+  x = (x % tileCount + tileCount) % tileCount;
+  if (y < 0 || y >= tileCount) return false;
+
+  char url[96];
+  snprintf(url, sizeof(url), "https://tile.openstreetmap.org/%d/%d/%d.png", z, x, y);
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, url)) {
+    return false;
+  }
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[MAP] Tile HTTP %d %s\n", code, url);
+    http.end();
+    return false;
+  }
+
+  WiFiClient* stream = http.getStreamPtr();
+  size_t total = 0;
+  while (http.connected() && total < tileBufferSize) {
+    const size_t available = stream->available();
+    if (available == 0) {
+      if (total > 0 && !stream->connected()) break;
+      delay(1);
+      continue;
+    }
+    const size_t room = tileBufferSize - total;
+    const size_t chunk = min(available, room);
+    const int read = stream->readBytes(tileBuffer + total, chunk);
+    if (read <= 0) break;
+    total += read;
+  }
+  http.end();
+  if (total < 64 || total >= tileBufferSize) {
+    Serial.printf("[MAP] Tile size KO z=%d x=%d y=%d bytes=%u\n", z, x, y, static_cast<unsigned>(total));
+    return false;
+  }
+
+  pngTileScreenX = screenX;
+  pngTileScreenY = screenY;
+  if (png.openRAM(tileBuffer, total, pngDrawTile) != PNG_SUCCESS) {
+    Serial.printf("[MAP] PNG decode open KO z=%d x=%d y=%d bytes=%u\n", z, x, y, static_cast<unsigned>(total));
+    return false;
+  }
+  const int decoded = png.decode(nullptr, 0);
+  png.close();
+  if (decoded != PNG_SUCCESS) {
+    Serial.printf("[MAP] PNG decode KO z=%d x=%d y=%d err=%d\n", z, x, y, decoded);
+    return false;
+  }
+  return true;
+}
+
+void fetchMapTiles() {
+  if (!mapFrame || !tileBuffer || WiFi.status() != WL_CONNECTED || mapFetchInProgress) return;
+  mapFetchInProgress = true;
+  clearMapFrame();
+  constexpr int cx = 240;
+  constexpr int cy = 240;
+  constexpr int radius = 198;
+  const int zoom = zoomForRange(kHomeLat, kRangeKm, radius);
+  const double centerX = lonToPixelX(kHomeLon, zoom);
+  const double centerY = latToPixelY(kHomeLat, zoom);
+  const double topLeftX = centerX - cx;
+  const double topLeftY = centerY - cy;
+  const int minTileX = floor(topLeftX / 256.0);
+  const int minTileY = floor(topLeftY / 256.0);
+  const int maxTileX = floor((topLeftX + kWidth) / 256.0);
+  const int maxTileY = floor((topLeftY + kHeight) / 256.0);
+  int ok = 0;
+  int total = 0;
+  Serial.printf("[MAP] Fetch OSM z=%d center=%.5f,%.5f\n", zoom, kHomeLat, kHomeLon);
+  for (int ty = minTileY; ty <= maxTileY; ++ty) {
+    for (int tx = minTileX; tx <= maxTileX; ++tx) {
+      const int screenX = static_cast<int>(round(tx * 256.0 - topLeftX));
+      const int screenY = static_cast<int>(round(ty * 256.0 - topLeftY));
+      ++total;
+      if (fetchTilePng(zoom, tx, ty, screenX, screenY)) {
+        ++ok;
+      }
+      delay(80);
+    }
+  }
+  mapReady = ok > 0;
+  mapFetchInProgress = false;
+  Serial.printf("[MAP] Tiles %d/%d ready=%d\n", ok, total, mapReady);
+}
+
 void fillRect(int x, int y, int w, int h, uint16_t color) {
   for (int yy = y; yy < y + h; ++yy) {
     for (int xx = x; xx < x + w; ++xx) {
@@ -760,7 +921,20 @@ void drawRadarFrame() {
   fillCircle(cx, cy, r - 8, rgb565(2, 17, 16));
   fillCircle(cx, cy, 168, rgb565(2, 24, 19));
   fillCircle(cx, cy, 98, rgb565(3, 28, 20));
-  drawMapWatermark(map, rgb565(3, 24, 16), rgb565(14, 60, 36), rgb565(20, 76, 44), rgb565(44, 124, 60));
+  if (mapReady && mapFrame) {
+    for (int y = 0; y < kHeight; ++y) {
+      for (int x = 0; x < kWidth; ++x) {
+        const int dx = x - cx;
+        const int dy = y - cy;
+        if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
+          const int index = y * kWidth + x;
+          frame[index] = blend565(frame[index], mapFrame[index], 190);
+        }
+      }
+    }
+  } else {
+    drawMapWatermark(map, rgb565(3, 24, 16), rgb565(14, 60, 36), rgb565(20, 76, 44), rgb565(44, 124, 60));
+  }
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
@@ -923,6 +1097,19 @@ bool initDisplay() {
     Serial.println("[DISPLAY] Framebuffer PSRAM KO");
     return false;
   }
+  mapFrame = static_cast<uint16_t*>(heap_caps_malloc(kWidth * kHeight * sizeof(uint16_t),
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!mapFrame) {
+    Serial.println("[DISPLAY] Map framebuffer PSRAM KO");
+    return false;
+  }
+  tileBufferSize = 220 * 1024;
+  tileBuffer = static_cast<uint8_t*>(heap_caps_malloc(tileBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!tileBuffer) {
+    Serial.println("[DISPLAY] Tile buffer PSRAM KO");
+    return false;
+  }
+  clearMapFrame();
 
   initBacklight();
   drawRadarFrame();
@@ -1106,6 +1293,7 @@ void setup() {
   initTouch();
   initImu();
   connectWifi();
+  fetchMapTiles();
   printStatus();
 }
 
@@ -1115,6 +1303,12 @@ void loop() {
   if (now - lastStatusMs >= 5000) {
     lastStatusMs = now;
     printStatus();
+  }
+
+  if (!mapReady && WiFi.status() == WL_CONNECTED && now - lastMapFetchMs >= 60000) {
+    lastMapFetchMs = now;
+    fetchMapTiles();
+    drawRadarFrame();
   }
 
   if (now - lastI2cScanMs >= 30000) {
