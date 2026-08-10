@@ -639,37 +639,25 @@ void drawBlendPolyline(const int points[][2], int count, uint16_t color, uint8_t
 }
 
 void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t border, uint16_t label) {
-  const int forests[][3] = {
-      {104, 118, 70}, {164, 166, 82}, {320, 122, 68}, {382, 326, 84},
-      {142, 356, 78}, {264, 292, 96}, {72, 248, 56}};
-  for (const auto& area : forests) {
-    blendFillCircle(area[0], area[1], area[2], forest, 42);
-  }
-
-  const int contour[][4] = {
-      {38, 148, 126, 104}, {126, 104, 250, 124}, {250, 124, 412, 86},
-      {54, 320, 142, 274}, {142, 274, 246, 286}, {246, 286, 404, 340},
-      {118, 394, 198, 344}, {198, 344, 338, 386}, {72, 198, 176, 220},
-      {176, 220, 250, 180}, {250, 180, 360, 206}, {328, 366, 424, 286}};
-  for (const auto& l : contour) {
-    blendLine(l[0], l[1], l[2], l[3], terrain, 50);
+  const int contours[][4] = {
+      {46, 138, 140, 100}, {140, 100, 260, 122}, {260, 122, 410, 90},
+      {54, 316, 148, 278}, {148, 278, 252, 288}, {252, 288, 410, 338},
+      {108, 390, 204, 346}, {204, 346, 340, 382}, {72, 202, 176, 222},
+      {176, 222, 250, 184}, {250, 184, 362, 204}, {328, 360, 422, 284}};
+  for (const auto& l : contours) {
+    blendLine(l[0], l[1], l[2], l[3], terrain, 42);
   }
 
   const int roads[][4] = {
-      {32, 284, 174, 246}, {174, 246, 322, 264}, {322, 264, 434, 230},
-      {86, 390, 188, 342}, {188, 342, 298, 374}, {298, 374, 420, 336},
-      {312, 88, 344, 208}, {356, 232, 430, 188}};
+      {36, 286, 176, 246}, {176, 246, 318, 262}, {318, 262, 430, 230},
+      {90, 388, 190, 342}, {190, 342, 300, 372}, {300, 372, 414, 338}};
   for (const auto& l : roads) {
-    blendLine(l[0], l[1], l[2], l[3], road, 70);
+    blendLine(l[0], l[1], l[2], l[3], road, 48);
   }
 
-  const int borderLine[][2] = {{42, 330}, {94, 292}, {134, 250}, {174, 220}, {214, 192}, {274, 166}, {352, 140}, {430, 112}};
-  drawBlendPolyline(borderLine, 8, border, 70);
-  const int lake[][2] = {{238, 314}, {286, 326}, {334, 348}, {388, 384}, {430, 418}};
-  drawBlendPolyline(lake, 5, rgb565(4, 42, 38), 75);
-
+  const int ridge[][2] = {{42, 330}, {96, 292}, {134, 252}, {174, 222}, {216, 194}, {276, 168}, {354, 142}, {430, 114}};
+  drawBlendPolyline(ridge, 8, border, 48);
   drawText(154, 248, "GIMEL", label, 1);
-  drawText(306, 326, "GLAND", label, 1);
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
@@ -704,17 +692,17 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
   const char* labels[] = {"RADAR", "RECH", "FAV", "REGL", "IA"};
-  constexpr int width = 58;
-  constexpr int height = 36;
+  constexpr int width = 54;
+  constexpr int height = 32;
   constexpr int gap = 6;
-  constexpr int startX = 80;
-  constexpr int y = 358;
+  constexpr int startX = 90;
+  constexpr int y = 364;
   for (int i = 0; i < 5; ++i) {
     const int x = startX + i * (width + gap);
     const bool active = i == 0;
     fillRoundRect(x, y, width, height, 14, active ? rgb565(5, 31, 20) : panel);
     drawRoundRect(x, y, width, height, 14, active ? green : rgb565(36, 92, 52));
-    drawTextCentered(x + width / 2, y + 13, labels[i], active ? green : text, 1);
+    drawTextCentered(x + width / 2, y + 12, labels[i], active ? green : text, 1);
   }
 }
 
@@ -746,8 +734,8 @@ void drawRadarFrame() {
   constexpr int cy = 240;
   constexpr int r = 198;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(118, 252, 112);
-  const uint16_t softGreen = rgb565(86, 214, 96);
+  const uint16_t green = rgb565(126, 255, 116);
+  const uint16_t softGreen = rgb565(82, 224, 121);
   const uint16_t glow = rgb565(42, 150, 62);
   const uint16_t dim = rgb565(8, 46, 26);
   const uint16_t map = rgb565(5, 34, 22);
@@ -762,17 +750,17 @@ void drawRadarFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 120 * 120 ? 18 : (d2 < 180 * 180 ? 13 : 8);
-        const uint8_t blue = d2 < 140 * 140 ? 13 : 10;
+        const uint8_t shade = d2 < 120 * 120 ? 16 : (d2 < 180 * 180 ? 11 : 7);
+        const uint8_t blue = d2 < 140 * 140 ? 15 : 12;
         frame[y * kWidth + x] = rgb565(1, shade, blue);
       }
     }
   }
 
-  fillCircle(cx, cy, r - 8, rgb565(1, 13, 10));
-  fillCircle(cx, cy, 168, rgb565(1, 17, 11));
-  fillCircle(cx, cy, 98, rgb565(3, 22, 14));
-  drawMapWatermark(map, rgb565(4, 34, 20), rgb565(18, 84, 44), rgb565(28, 104, 52), rgb565(42, 116, 58));
+  fillCircle(cx, cy, r - 8, rgb565(2, 17, 16));
+  fillCircle(cx, cy, 168, rgb565(2, 24, 19));
+  fillCircle(cx, cy, 98, rgb565(3, 28, 20));
+  drawMapWatermark(map, rgb565(3, 24, 16), rgb565(14, 60, 36), rgb565(20, 76, 44), rgb565(44, 124, 60));
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
@@ -788,9 +776,9 @@ void drawRadarFrame() {
              cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
   }
 
-  fillWedge(cx, cy, r - 8, sweepDeg - 42.0f, sweepDeg - 28.0f, rgb565(0, 42, 36));
-  fillWedge(cx, cy, r - 8, sweepDeg - 28.0f, sweepDeg - 14.0f, rgb565(0, 72, 58));
-  fillWedge(cx, cy, r - 8, sweepDeg - 14.0f, sweepDeg, rgb565(0, 112, 82));
+  fillWedge(cx, cy, r - 8, sweepDeg - 42.0f, sweepDeg - 28.0f, rgb565(4, 34, 30));
+  fillWedge(cx, cy, r - 8, sweepDeg - 28.0f, sweepDeg - 14.0f, rgb565(6, 58, 46));
+  fillWedge(cx, cy, r - 8, sweepDeg - 14.0f, sweepDeg, rgb565(12, 92, 64));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   drawThickLine(cx, cy,
                 cx + static_cast<int>(cosf(sweepRad) * (r - 6)),
@@ -812,8 +800,8 @@ void drawRadarFrame() {
       drawCircle(x, y, 24, green);
       drawThickLine(cx, cy, x, y, glow);
     }
-    blendFillCircle(x, y, planeIndex == selectedPlane ? 30 : 22, green, planeIndex == selectedPlane ? 82 : 56);
-    fillCircle(x, y, planeIndex == selectedPlane ? 14 : 10, rgb565(0, 28, 16));
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 28 : 20, green, planeIndex == selectedPlane ? 46 : 28);
+    fillCircle(x, y, planeIndex == selectedPlane ? 9 : 6, rgb565(0, 18, 14));
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(2, 18, 10));
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(106, 232, 100));
     drawLine(noseX, noseY, leftX, leftY, rgb565(218, 255, 210));
