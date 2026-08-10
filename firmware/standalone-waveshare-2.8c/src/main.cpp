@@ -37,7 +37,8 @@ constexpr uint8_t kOutputMask =
                          (1U << (kExioLcdCs - 1)) |
                          (1U << (kExioBuzzer - 1)));
 
-constexpr uint8_t kGt911Address = 0x5D;
+constexpr uint8_t kGt911AddressPrimary = 0x5D;
+constexpr uint8_t kGt911AddressAlt = 0x14;
 constexpr uint16_t kGt911ReadXyReg = 0x814E;
 constexpr uint16_t kGt911ProductIdReg = 0x8140;
 constexpr int kGt911IntPin = 16;
@@ -67,6 +68,7 @@ uint16_t lastTouchX = 0;
 uint16_t lastTouchY = 0;
 bool gt911Ok = false;
 bool qmiOk = false;
+uint8_t gt911Address = kGt911AddressPrimary;
 float accX = 0.0f;
 float accY = 0.0f;
 float accZ = 0.0f;
@@ -108,14 +110,14 @@ void setExio(uint8_t pin, bool high) {
   pcaWrite(0x01, output);
 }
 
-bool touchI2cRead(uint16_t reg, uint8_t* data, size_t len) {
-  Wire.beginTransmission(kGt911Address);
+bool touchI2cReadAt(uint8_t address, uint16_t reg, uint8_t* data, size_t len) {
+  Wire.beginTransmission(address);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));
   if (Wire.endTransmission(true) != 0) {
     return false;
   }
-  const uint8_t got = Wire.requestFrom(kGt911Address, static_cast<uint8_t>(len));
+  const uint8_t got = Wire.requestFrom(address, static_cast<uint8_t>(len));
   if (got != len) {
     return false;
   }
@@ -125,8 +127,12 @@ bool touchI2cRead(uint16_t reg, uint8_t* data, size_t len) {
   return true;
 }
 
+bool touchI2cRead(uint16_t reg, uint8_t* data, size_t len) {
+  return touchI2cReadAt(gt911Address, reg, data, len);
+}
+
 bool touchI2cWrite(uint16_t reg, uint8_t value) {
-  Wire.beginTransmission(kGt911Address);
+  Wire.beginTransmission(gt911Address);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));
   Wire.write(value);
@@ -177,9 +183,15 @@ void initTouch() {
   pinMode(kGt911IntPin, INPUT);
 
   uint8_t product[4] = {};
-  gt911Ok = touchI2cRead(kGt911ProductIdReg, product, 4);
+  gt911Address = kGt911AddressPrimary;
+  gt911Ok = touchI2cReadAt(gt911Address, kGt911ProductIdReg, product, 4);
+  if (!gt911Ok) {
+    gt911Address = kGt911AddressAlt;
+    gt911Ok = touchI2cReadAt(gt911Address, kGt911ProductIdReg, product, 4);
+  }
   if (gt911Ok) {
-    Serial.printf("[TOUCH] GT911 product=%c%c%c%c\n", product[0], product[1], product[2], product[3]);
+    Serial.printf("[TOUCH] GT911 address=0x%02X product=%c%c%c%c\n",
+                  gt911Address, product[0], product[1], product[2], product[3]);
   } else {
     Serial.println("[TOUCH] GT911 absent ou lecture KO");
   }
@@ -575,13 +587,13 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
 void drawDiagnostics(uint16_t green, uint16_t text, uint16_t panel) {
   char line[48];
-  fillRoundRect(48, 438, 384, 28, 10, panel);
-  snprintf(line, sizeof(line), "GT %s  QMI %s", gt911Ok ? "OK" : "KO", qmiOk ? "OK" : "KO");
-  drawText(66, 446, line, gt911Ok && qmiOk ? green : text, 2);
+  fillRoundRect(104, 438, 272, 28, 10, panel);
+  snprintf(line, sizeof(line), "GT%s QMI%s", gt911Ok ? "OK" : "KO", qmiOk ? "OK" : "KO");
+  drawTextCentered(240, 446, line, gt911Ok && qmiOk ? green : text, 2);
   if (qmiOk) {
-    char xyz[48];
-    snprintf(xyz, sizeof(xyz), "X%+.1f Y%+.1f Z%+.1f", accX, accY, accZ);
-    drawText(248, 446, xyz, text, 1);
+    char xyz[32];
+    snprintf(xyz, sizeof(xyz), "X%.1f Y%.1f", accX, accY);
+    drawTextCentered(240, 468, xyz, text, 1);
   }
 }
 
