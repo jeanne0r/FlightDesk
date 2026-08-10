@@ -41,6 +41,8 @@ uint16_t* frame = nullptr;
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
+uint32_t lastRadarMs = 0;
+float sweepDeg = -75.0f;
 
 void pcaWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kTca9554Address);
@@ -257,7 +259,7 @@ void fillCircle(int cx, int cy, int r, uint16_t color) {
 void drawRadarFrame() {
   if (!frame || !lcdPanel) return;
 
-  const uint16_t dark = rgb565(0, 8, 10);
+  const uint16_t dark = rgb565(0, 6, 7);
   for (int i = 0; i < kWidth * kHeight; ++i) {
     frame[i] = dark;
   }
@@ -265,8 +267,10 @@ void drawRadarFrame() {
   constexpr int cx = 240;
   constexpr int cy = 240;
   constexpr int r = 226;
-  const uint16_t green = rgb565(95, 255, 105);
-  const uint16_t dim = rgb565(20, 90, 35);
+  const uint16_t green = rgb565(115, 255, 120);
+  const uint16_t mid = rgb565(34, 150, 58);
+  const uint16_t dim = rgb565(12, 70, 30);
+  const uint16_t map = rgb565(12, 50, 32);
 
   fillCircle(cx, cy, r, rgb565(0, 22, 14));
   drawCircle(cx, cy, r, green);
@@ -281,9 +285,21 @@ void drawRadarFrame() {
     drawLine(cx, cy, cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
   }
 
-  drawLine(cx, cy, cx + 190, cy - 70, green);
-  drawLine(cx, cy, cx + 160, cy - 40, rgb565(35, 170, 70));
-  drawLine(cx, cy, cx + 130, cy - 15, rgb565(25, 110, 50));
+  const int mapLines[][4] = {
+      {62, 126, 202, 92}, {202, 92, 338, 122}, {338, 122, 416, 210},
+      {76, 306, 198, 262}, {198, 262, 314, 282}, {314, 282, 420, 344},
+      {138, 394, 234, 348}, {234, 348, 360, 390}, {94, 198, 180, 220},
+      {180, 220, 252, 178}, {252, 178, 338, 206}};
+  for (const auto& l : mapLines) {
+    drawLine(l[0], l[1], l[2], l[3], map);
+  }
+
+  const float sweepRad = sweepDeg * DEG_TO_RAD;
+  drawLine(cx, cy, cx + cosf(sweepRad) * (r - 12), cy + sinf(sweepRad) * (r - 12), green);
+  for (int i = 1; i <= 9; ++i) {
+    const float trail = (sweepDeg - i * 4.0f) * DEG_TO_RAD;
+    drawLine(cx, cy, cx + cosf(trail) * (r - 20), cy + sinf(trail) * (r - 20), mid);
+  }
 
   const int planes[][3] = {
       {122, 116, 32}, {342, 132, 120}, {190, 310, 205}, {318, 332, 292},
@@ -299,6 +315,20 @@ void drawRadarFrame() {
 
   fillCircle(cx, cy, 9, dark);
   drawCircle(cx, cy, 10, green);
+
+  for (int y = 404; y <= 438; ++y) {
+    for (int x = 170; x <= 310; ++x) {
+      putPixel(x, y, rgb565(0, 14, 18));
+    }
+  }
+  for (int x = 170; x <= 310; ++x) {
+    putPixel(x, 404, green);
+    putPixel(x, 438, green);
+  }
+  for (int y = 404; y <= 438; ++y) {
+    putPixel(170, y, green);
+    putPixel(310, y, green);
+  }
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
 }
@@ -441,8 +471,8 @@ bool initDisplay() {
   }
 
   initBacklight();
-  drawCalibrationFrame();
-  Serial.println("[DISPLAY] OK calibration frame written once");
+  drawRadarFrame();
+  Serial.println("[DISPLAY] OK stable radar frame");
   return true;
 }
 
@@ -550,6 +580,15 @@ void loop() {
   if (now - lastI2cScanMs >= 30000) {
     lastI2cScanMs = now;
     scanI2c();
+  }
+
+  if (now - lastRadarMs >= 300) {
+    lastRadarMs = now;
+    sweepDeg += 4.0f;
+    if (sweepDeg >= 360.0f) {
+      sweepDeg -= 360.0f;
+    }
+    drawRadarFrame();
   }
 
   delay(10);
