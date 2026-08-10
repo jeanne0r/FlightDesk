@@ -60,12 +60,15 @@ uint32_t lastRadarMs = 0;
 uint32_t lastTouchPollMs = 0;
 uint32_t lastImuMs = 0;
 uint32_t touchMarkerUntilMs = 0;
+uint32_t lastTouchLogMs = 0;
 float sweepDeg = -75.0f;
 bool touchWasDown = false;
+bool touchActive = false;
 bool menuOpen = false;
 int selectedPlane = -1;
 uint16_t lastTouchX = 0;
 uint16_t lastTouchY = 0;
+uint32_t touchCount = 0;
 bool gt911Ok = false;
 bool qmiOk = false;
 uint8_t gt911Address = kGt911AddressPrimary;
@@ -587,14 +590,18 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
 void drawDiagnostics(uint16_t green, uint16_t text, uint16_t panel) {
   char line[48];
-  fillRoundRect(104, 438, 272, 28, 10, panel);
+  fillRoundRect(76, 438, 328, 36, 10, panel);
   snprintf(line, sizeof(line), "GT%s QMI%s", gt911Ok ? "OK" : "KO", qmiOk ? "OK" : "KO");
-  drawTextCentered(240, 446, line, gt911Ok && qmiOk ? green : text, 2);
-  if (qmiOk) {
-    char xyz[32];
-    snprintf(xyz, sizeof(xyz), "X%.1f Y%.1f", accX, accY);
-    drawTextCentered(240, 468, xyz, text, 1);
+  drawTextCentered(240, 443, line, gt911Ok && qmiOk ? green : text, 2);
+  char tiny[48];
+  if (millis() < touchMarkerUntilMs) {
+    snprintf(tiny, sizeof(tiny), "T%lu X%u Y%u", static_cast<unsigned long>(touchCount), lastTouchX, lastTouchY);
+  } else if (qmiOk) {
+    snprintf(tiny, sizeof(tiny), "XYZ %.1f %.1f %.1f", accX, accY, accZ);
+  } else {
+    snprintf(tiny, sizeof(tiny), "TOUCH SCREEN READY");
   }
+  drawTextCentered(240, 464, tiny, text, 1);
 }
 
 void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_t color) {
@@ -963,7 +970,20 @@ void pollTouch() {
   uint16_t x = 0;
   uint16_t y = 0;
   const bool down = readTouch(x, y);
+  const uint32_t now = millis();
+  touchActive = down;
+  if (down) {
+    lastTouchX = x;
+    lastTouchY = y;
+    touchMarkerUntilMs = now + 700;
+    if (now - lastTouchLogMs >= 180) {
+      lastTouchLogMs = now;
+      Serial.printf("[TOUCH] raw x=%u y=%u down=%d count=%lu\n",
+                    x, y, down, static_cast<unsigned long>(touchCount));
+    }
+  }
   if (down && !touchWasDown) {
+    ++touchCount;
     handleTap(x, y);
   }
   touchWasDown = down;
