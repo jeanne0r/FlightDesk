@@ -483,12 +483,17 @@ void drawRect(int x, int y, int w, int h, uint16_t color) {
 }
 
 void fillRoundRect(int x, int y, int w, int h, int radius, uint16_t color) {
-  fillRect(x + radius, y, w - radius * 2, h, color);
-  fillRect(x, y + radius, w, h - radius * 2, color);
-  fillCircle(x + radius, y + radius, radius, color);
-  fillCircle(x + w - radius - 1, y + radius, radius, color);
-  fillCircle(x + radius, y + h - radius - 1, radius, color);
-  fillCircle(x + w - radius - 1, y + h - radius - 1, radius, color);
+  for (int yy = y; yy < y + h; ++yy) {
+    for (int xx = x; xx < x + w; ++xx) {
+      int cx = xx < x + radius ? x + radius : (xx >= x + w - radius ? x + w - radius - 1 : xx);
+      int cy = yy < y + radius ? y + radius : (yy >= y + h - radius ? y + h - radius - 1 : yy);
+      const int dx = xx - cx;
+      const int dy = yy - cy;
+      if (dx * dx + dy * dy <= radius * radius) {
+        putPixel(xx, yy, color);
+      }
+    }
+  }
 }
 
 void drawRoundRect(int x, int y, int w, int h, int radius, uint16_t color) {
@@ -496,10 +501,17 @@ void drawRoundRect(int x, int y, int w, int h, int radius, uint16_t color) {
   drawLine(x + radius, y + h - 1, x + w - radius - 1, y + h - 1, color);
   drawLine(x, y + radius, x, y + h - radius - 1, color);
   drawLine(x + w - 1, y + radius, x + w - 1, y + h - radius - 1, color);
-  drawCircle(x + radius, y + radius, radius, color);
-  drawCircle(x + w - radius - 1, y + radius, radius, color);
-  drawCircle(x + radius, y + h - radius - 1, radius, color);
-  drawCircle(x + w - radius - 1, y + h - radius - 1, radius, color);
+  for (int i = 0; i <= radius; ++i) {
+    const int j = static_cast<int>(sqrtf(radius * radius - i * i));
+    putPixel(x + radius - i, y + radius - j, color);
+    putPixel(x + radius - j, y + radius - i, color);
+    putPixel(x + w - radius - 1 + i, y + radius - j, color);
+    putPixel(x + w - radius - 1 + j, y + radius - i, color);
+    putPixel(x + radius - i, y + h - radius - 1 + j, color);
+    putPixel(x + radius - j, y + h - radius - 1 + i, color);
+    putPixel(x + w - radius - 1 + i, y + h - radius - 1 + j, color);
+    putPixel(x + w - radius - 1 + j, y + h - radius - 1 + i, color);
+  }
 }
 
 uint8_t glyphRow(char c, int row) {
@@ -564,45 +576,40 @@ void drawTextCentered(int cx, int y, const char* text, uint16_t color, int scale
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
-  fillRoundRect(118, 116, 244, 226, 24, panel);
-  drawRoundRect(118, 116, 244, 226, 24, green);
-  drawTextCentered(240, 144, "MENU", green, 3);
-  drawRoundRect(154, 178, 172, 42, 14, green);
-  drawTextCentered(240, 191, "RADAR", text, 2);
-  drawRoundRect(154, 234, 172, 42, 14, green);
-  drawTextCentered(240, 247, "REGLAGES", text, 2);
-  drawRoundRect(154, 290, 172, 42, 14, green);
-  drawTextCentered(240, 303, "FERMER", text, 2);
+  fillRoundRect(108, 106, 264, 244, 22, panel);
+  drawRoundRect(108, 106, 264, 244, 22, rgb565(68, 190, 92));
+  drawTextCentered(240, 134, "MENU", green, 3);
+  fillRoundRect(144, 174, 192, 42, 14, rgb565(2, 20, 15));
+  drawRoundRect(144, 174, 192, 42, 14, rgb565(70, 220, 104));
+  drawTextCentered(240, 187, "RADAR", text, 2);
+  fillRoundRect(144, 228, 192, 42, 14, rgb565(2, 20, 15));
+  drawRoundRect(144, 228, 192, 42, 14, rgb565(70, 220, 104));
+  drawTextCentered(240, 241, "REGLAGES", text, 2);
+  fillRoundRect(144, 282, 192, 42, 14, rgb565(2, 20, 15));
+  drawRoundRect(144, 282, 192, 42, 14, rgb565(70, 220, 104));
+  drawTextCentered(240, 295, "FERMER", text, 2);
 }
 
 void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   if (selectedPlane < 0 || selectedPlane >= static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0]))) return;
   const RadarPlane& plane = kPlanes[selectedPlane];
-  fillRoundRect(84, 136, 312, 188, 18, panel);
-  drawRoundRect(84, 136, 312, 188, 18, green);
-  drawText(112, 162, "AVION SELECTIONNE", green, 2);
-  drawText(112, 198, plane.callsign, green, 4);
-  drawText(112, 244, "AIRBUS A320", text, 2);
-  drawText(112, 276, "24KM  760KMH", text, 2);
-  drawText(112, 300, "3200M  218DEG", text, 2);
-  drawRoundRect(328, 152, 42, 42, 14, green);
-  drawTextCentered(349, 164, "X", text, 3);
+  fillRoundRect(78, 132, 324, 196, 18, panel);
+  drawRoundRect(78, 132, 324, 196, 18, rgb565(76, 210, 102));
+  drawText(108, 158, "AVION SELECTIONNE", green, 2);
+  drawText(108, 194, plane.callsign, green, 4);
+  drawText(108, 240, "AIRBUS A320", text, 2);
+  drawText(108, 274, "24KM  760KMH", text, 2);
+  drawText(108, 298, "3200M  218DEG", text, 2);
+  fillRoundRect(332, 150, 44, 44, 15, rgb565(2, 24, 16));
+  drawRoundRect(332, 150, 44, 44, 15, green);
+  drawTextCentered(354, 162, "X", text, 3);
 }
 
 void drawDiagnostics(uint16_t green, uint16_t text, uint16_t panel) {
   char line[48];
-  fillRoundRect(76, 438, 328, 36, 10, panel);
+  fillRoundRect(126, 446, 228, 20, 8, panel);
   snprintf(line, sizeof(line), "GT%s QMI%s", gt911Ok ? "OK" : "KO", qmiOk ? "OK" : "KO");
-  drawTextCentered(240, 443, line, gt911Ok && qmiOk ? green : text, 2);
-  char tiny[48];
-  if (millis() < touchMarkerUntilMs) {
-    snprintf(tiny, sizeof(tiny), "T%lu X%u Y%u", static_cast<unsigned long>(touchCount), lastTouchX, lastTouchY);
-  } else if (qmiOk) {
-    snprintf(tiny, sizeof(tiny), "XYZ %.1f %.1f %.1f", accX, accY, accZ);
-  } else {
-    snprintf(tiny, sizeof(tiny), "TOUCH SCREEN READY");
-  }
-  drawTextCentered(240, 464, tiny, text, 1);
+  drawTextCentered(240, 452, line, gt911Ok && qmiOk ? green : text, 1);
 }
 
 void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_t color) {
@@ -626,8 +633,8 @@ void drawRadarFrame() {
   constexpr int cy = 240;
   constexpr int r = 220;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(108, 250, 112);
-  const uint16_t softGreen = rgb565(88, 210, 96);
+  const uint16_t green = rgb565(118, 252, 112);
+  const uint16_t softGreen = rgb565(86, 214, 96);
   const uint16_t glow = rgb565(42, 150, 62);
   const uint16_t mid = rgb565(22, 104, 42);
   const uint16_t dim = rgb565(8, 46, 26);
@@ -643,15 +650,16 @@ void drawRadarFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 138 * 138 ? 16 : (d2 < 192 * 192 ? 12 : 8);
-        frame[y * kWidth + x] = rgb565(1, shade, 12);
+        const uint8_t shade = d2 < 120 * 120 ? 18 : (d2 < 180 * 180 ? 13 : 8);
+        const uint8_t blue = d2 < 140 * 140 ? 13 : 10;
+        frame[y * kWidth + x] = rgb565(1, shade, blue);
       }
     }
   }
 
-  fillCircle(cx, cy, r - 8, rgb565(2, 15, 10));
-  fillCircle(cx, cy, 168, rgb565(2, 20, 12));
-  fillCircle(cx, cy, 98, rgb565(4, 25, 15));
+  fillCircle(cx, cy, r - 8, rgb565(1, 13, 10));
+  fillCircle(cx, cy, 168, rgb565(1, 17, 11));
+  fillCircle(cx, cy, 98, rgb565(3, 22, 14));
 
   const int mapLines[][4] = {
       {54, 130, 164, 98}, {164, 98, 285, 122}, {285, 122, 414, 78},
@@ -678,9 +686,9 @@ void drawRadarFrame() {
              cx + cosf(rad) * r, cy + sinf(rad) * r, dim);
   }
 
-  fillWedge(cx, cy, r - 10, sweepDeg - 34.0f, sweepDeg - 22.0f, rgb565(0, 34, 25));
-  fillWedge(cx, cy, r - 10, sweepDeg - 22.0f, sweepDeg - 10.0f, rgb565(0, 52, 35));
-  fillWedge(cx, cy, r - 10, sweepDeg - 10.0f, sweepDeg, rgb565(0, 76, 48));
+  fillWedge(cx, cy, r - 12, sweepDeg - 40.0f, sweepDeg - 27.0f, rgb565(0, 28, 22));
+  fillWedge(cx, cy, r - 12, sweepDeg - 27.0f, sweepDeg - 13.0f, rgb565(0, 46, 32));
+  fillWedge(cx, cy, r - 12, sweepDeg - 13.0f, sweepDeg, rgb565(0, 70, 44));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   drawThickLine(cx, cy,
                 cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
@@ -702,21 +710,21 @@ void drawRadarFrame() {
       drawCircle(x, y, 24, green);
       drawThickLine(cx, cy, x, y, glow);
     }
-    fillCircle(x, y, planeIndex == selectedPlane ? 14 : 11, rgb565(0, 34, 18));
+    fillCircle(x, y, planeIndex == selectedPlane ? 14 : 10, rgb565(0, 28, 16));
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(2, 18, 10));
-    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, softGreen);
-    drawLine(noseX, noseY, leftX, leftY, green);
-    drawLine(noseX, noseY, rightX, rightY, green);
+    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(106, 232, 100));
+    drawLine(noseX, noseY, leftX, leftY, rgb565(218, 255, 210));
+    drawLine(noseX, noseY, rightX, rightY, rgb565(218, 255, 210));
     ++planeIndex;
   }
 
-  drawTextCentered(cx, 54, "18:47", text, 3);
-  drawTextCentered(cx, 91, "AIRPLANES.LIVE", softGreen, 2);
-  drawTextCentered(cx, 124, "7", green, 7);
-  drawTextCentered(cx, 183, "AVIONS", green, 3);
-  drawText(330, 236, "20", softGreen, 2);
+  drawTextCentered(cx, 50, "18:47", text, 3);
+  drawTextCentered(cx, 88, "AIRPLANES.LIVE", softGreen, 2);
+  drawTextCentered(cx, 124, "7", green, 6);
+  drawTextCentered(cx, 176, "AVIONS", green, 3);
+  drawText(332, 236, "20", softGreen, 2);
   drawText(386, 236, "50", softGreen, 2);
-  drawText(390, 264, "KM", softGreen, 2);
+  drawText(388, 262, "KM", softGreen, 2);
 
   fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
@@ -727,18 +735,18 @@ void drawRadarFrame() {
   } else if (selectedPlane >= 0) {
     drawAircraftPopup(green, text, panel);
   } else {
-    fillRoundRect(176, 388, 128, 46, 17, panel);
-    drawRoundRect(176, 388, 128, 46, 17, green);
-    drawTextCentered(cx, 405, "MENU", text, 3);
+    fillRoundRect(172, 390, 136, 44, 18, rgb565(1, 12, 12));
+    drawRoundRect(172, 390, 136, 44, 18, rgb565(96, 238, 106));
+    drawTextCentered(cx, 406, "MENU", text, 3);
   }
 
   if (millis() < touchMarkerUntilMs) {
-    drawCircle(lastTouchX, lastTouchY, 18, rgb565(255, 255, 255));
-    drawLine(lastTouchX - 24, lastTouchY, lastTouchX + 24, lastTouchY, rgb565(255, 255, 255));
-    drawLine(lastTouchX, lastTouchY - 24, lastTouchX, lastTouchY + 24, rgb565(255, 255, 255));
+    drawCircle(lastTouchX, lastTouchY, 16, rgb565(120, 255, 130));
   }
 
-  drawDiagnostics(green, text, panel);
+  if (millis() < touchMarkerUntilMs || !gt911Ok || !qmiOk) {
+    drawDiagnostics(green, text, panel);
+  }
 
   esp_lcd_panel_draw_bitmap(lcdPanel, 0, 0, kWidth, kHeight, frame);
 }
