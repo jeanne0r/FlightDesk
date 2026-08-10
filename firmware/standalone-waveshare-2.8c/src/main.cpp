@@ -575,6 +575,55 @@ void drawTextCentered(int cx, int y, const char* text, uint16_t color, int scale
   drawText(cx - textWidth(text, scale) / 2, y, text, color, scale);
 }
 
+void drawPolyline(const int points[][2], int count, uint16_t color, int thickness = 1) {
+  for (int i = 0; i < count - 1; ++i) {
+    if (thickness > 1) {
+      drawThickLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1], color);
+    } else {
+      drawLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1], color);
+    }
+  }
+}
+
+void drawMapWatermark(uint16_t land, uint16_t forest, uint16_t road, uint16_t border, uint16_t label) {
+  const int forests[][3] = {
+      {100, 128, 58}, {156, 170, 72}, {328, 132, 54}, {370, 322, 74},
+      {142, 350, 66}, {266, 286, 90}, {66, 252, 48}};
+  for (const auto& area : forests) {
+    fillCircle(area[0], area[1], area[2], forest);
+  }
+
+  const int lake[][2] = {{236, 314}, {284, 326}, {332, 348}, {388, 386}, {432, 420}};
+  drawPolyline(lake, 5, rgb565(5, 44, 42), 2);
+  const int ridge[][2] = {{42, 332}, {94, 292}, {134, 250}, {172, 220}, {214, 190}, {274, 164}, {352, 138}, {430, 108}};
+  drawPolyline(ridge, 8, border, 2);
+  const int borderLine[][2] = {{52, 152}, {108, 174}, {154, 198}, {206, 212}, {258, 228}, {320, 260}, {406, 304}};
+  drawPolyline(borderLine, 7, border, 1);
+
+  const int roads[][4] = {
+      {36, 276, 178, 244}, {178, 244, 322, 264}, {322, 264, 438, 230},
+      {84, 390, 188, 342}, {188, 342, 298, 374}, {298, 374, 424, 336},
+      {72, 206, 168, 224}, {168, 224, 252, 184}, {252, 184, 388, 204},
+      {312, 86, 344, 208}, {356, 232, 430, 188}};
+  for (const auto& l : roads) {
+    drawLine(l[0], l[1], l[2], l[3], road);
+    drawLine(l[0], l[1] + 1, l[2], l[3] + 1, road);
+  }
+
+  const int minor[][4] = {
+      {64, 118, 154, 96}, {154, 96, 278, 120}, {278, 120, 404, 84},
+      {92, 330, 188, 286}, {188, 286, 268, 302}, {268, 302, 386, 358},
+      {122, 410, 210, 362}, {210, 362, 332, 398}, {340, 296, 430, 284}};
+  for (const auto& l : minor) {
+    drawLine(l[0], l[1], l[2], l[3], land);
+  }
+
+  drawText(182, 220, "GIMEL", label, 2);
+  drawText(300, 316, "GLAND", label, 1);
+  drawText(94, 180, "JURA", label, 1);
+  drawText(350, 252, "A1", label, 1);
+}
+
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   fillRoundRect(108, 106, 264, 244, 22, panel);
   drawRoundRect(108, 106, 264, 244, 22, rgb565(68, 190, 92));
@@ -660,17 +709,7 @@ void drawRadarFrame() {
   fillCircle(cx, cy, r - 8, rgb565(1, 13, 10));
   fillCircle(cx, cy, 168, rgb565(1, 17, 11));
   fillCircle(cx, cy, 98, rgb565(3, 22, 14));
-
-  const int mapLines[][4] = {
-      {54, 130, 164, 98}, {164, 98, 285, 122}, {285, 122, 414, 78},
-      {42, 310, 142, 270}, {142, 270, 246, 284}, {246, 284, 414, 332},
-      {116, 396, 198, 344}, {198, 344, 340, 386}, {68, 196, 178, 220},
-      {178, 220, 252, 178}, {252, 178, 360, 206}, {70, 374, 160, 402},
-      {312, 90, 342, 202}, {362, 232, 432, 198}, {328, 366, 428, 282}};
-  for (const auto& l : mapLines) {
-    drawLine(l[0], l[1], l[2], l[3], map);
-    drawLine(l[0], l[1] + 1, l[2], l[3] + 1, map);
-  }
+  drawMapWatermark(map, rgb565(4, 30, 20), rgb565(18, 78, 42), rgb565(26, 104, 48), rgb565(40, 110, 52));
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
