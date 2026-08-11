@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <PNGdec.h>
@@ -92,10 +93,12 @@ float accX = 0.0f;
 float accY = 0.0f;
 float accZ = 0.0f;
 bool mapReady = false;
+bool mapDirty = false;
 bool mapFetchInProgress = false;
 uint32_t lastTrafficFetchMs = 0;
 bool trafficLive = false;
 bool setupPortalActive = false;
+bool otaStarted = false;
 char storedSsid[33] = "";
 char storedPassword[65] = "";
 uint32_t wifiReconnectAtMs = 0;
@@ -160,6 +163,8 @@ struct LivePlane {
   int x;
   int y;
   int heading;
+  double lat;
+  double lon;
   char hex[8];
   char callsign[12];
   char type[20];
@@ -803,6 +808,9 @@ void fetchMapTiles() {
     }
   }
   mapReady = ok > 0;
+  if (mapReady) {
+    mapDirty = false;
+  }
   mapFetchInProgress = false;
   Serial.printf("[MAP] Tiles %d/%d ready=%d\n", ok, total, mapReady);
 }
@@ -924,6 +932,30 @@ int planeSpeedKmh(int index) {
   return trafficLive && livePlaneCount > 0 ? livePlanes[index].speedKmh : fallbackPlane(index).speedKmh;
 }
 
+bool updateLivePlanePosition(LivePlane& p) {
+  const double dist = distanceKm(radarLat, radarLon, p.lat, p.lon);
+  if (dist > kRangeKm || dist < 0.1) return false;
+  const double bearing = bearingDeg(radarLat, radarLon, p.lat, p.lon);
+  const double posR = (dist / kRangeKm) * (kRadarRadius - 26);
+  p.x = kRadarCx + static_cast<int>(sin(bearing * DEG_TO_RAD) * posR);
+  p.y = kRadarCy - static_cast<int>(cos(bearing * DEG_TO_RAD) * posR);
+  p.distanceKm = static_cast<int>(round(dist));
+  return true;
+}
+
+void updateLivePlanePositions() {
+  if (!trafficLive || livePlaneCount <= 0) return;
+  int write = 0;
+  for (int read = 0; read < livePlaneCount; ++read) {
+    LivePlane p = livePlanes[read];
+    if (!updateLivePlanePosition(p)) continue;
+    livePlanes[write++] = p;
+  }
+  livePlaneCount = write;
+  trafficLive = livePlaneCount > 0;
+  if (selectedPlane >= livePlaneCount) selectedPlane = -1;
+}
+
 void fetchTraffic() {
   if (WiFi.status() != WL_CONNECTED) {
     trafficLive = false;
@@ -972,20 +1004,17 @@ void fetchTraffic() {
 
     const double lat = ac["lat"].as<double>();
     const double lon = ac["lon"].as<double>();
-    const double dist = distanceKm(radarLat, radarLon, lat, lon);
-    if (dist > kRangeKm || dist < 0.1) continue;
-    const double bearing = bearingDeg(radarLat, radarLon, lat, lon);
-    const double posR = (dist / kRangeKm) * (kRadarRadius - 26);
     LivePlane& p = livePlanes[count];
-    p.x = kRadarCx + static_cast<int>(sin(bearing * DEG_TO_RAD) * posR);
-    p.y = kRadarCy - static_cast<int>(cos(bearing * DEG_TO_RAD) * posR);
+    p.lat = lat;
+    p.lon = lon;
+    if (!updateLivePlanePosition(p)) continue;
+    const double bearing = bearingDeg(radarLat, radarLon, lat, lon);
     p.heading = static_cast<int>(round(ac["track"] | ac["true_heading"] | bearing)) - 90;
     copyClean(p.hex, sizeof(p.hex), ac["hex"] | "", "");
     copyClean(p.callsign, sizeof(p.callsign), ac["flight"] | ac["r"] | ac["hex"] | "", "VOL");
     copyClean(p.type, sizeof(p.type), ac["t"] | ac["desc"] | "", "TYPE INCONNU");
     formatRoute(p.route, sizeof(p.route), ac["route"] | "");
     copyClean(p.photo, sizeof(p.photo), "", "PHOTO ?");
-    p.distanceKm = static_cast<int>(round(dist));
     p.altitudeM = static_cast<int>(round((ac["alt_baro"] | ac["alt_geom"] | 0) * 0.3048));
     p.speedKmh = static_cast<int>(round((ac["gs"] | 0) * 1.852));
     p.enriched = false;
@@ -1750,6 +1779,17 @@ void connectWifi() {
   }
 }
 
+void initOta() {
+  if (otaStarted || WiFi.status() != WL_CONNECTED) return;
+  ArduinoOTA.setHostname("flightdesk-waveshare-28c");
+  ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
+  ArduinoOTA.onEnd([]() { Serial.println("[OTA] End"); });
+  ArduinoOTA.onError([](ota_error_t error) { Serial.printf("[OTA] Error %u\n", error); });
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.println("[OTA] Actif: flightdesk-waveshare-28c.local");
+}
+
 const char* knownI2cDevice(uint8_t address) {
   switch (address) {
     case 0x20:
@@ -1810,12 +1850,33 @@ bool inBottomNav(uint16_t x, uint16_t y) {
 
 void invalidateLiveData() {
   mapReady = false;
+  mapDirty = false;
   mapReloadAfterMs = 0;
   lastMapFetchMs = 0;
   lastTrafficFetchMs = 0;
   trafficLive = false;
   livePlaneCount = 0;
   selectedPlane = -1;
+}
+
+void shiftMapFrame(int dx, int dy) {
+  if (!mapFrame || !mapReady || (dx == 0 && dy == 0)) return;
+  const uint16_t bg = rgb565(0, 6, 8);
+  const int yStart = dy > 0 ? kHeight - 1 : 0;
+  const int yEnd = dy > 0 ? -1 : kHeight;
+  const int yStep = dy > 0 ? -1 : 1;
+  const int xStart = dx > 0 ? kWidth - 1 : 0;
+  const int xEnd = dx > 0 ? -1 : kWidth;
+  const int xStep = dx > 0 ? -1 : 1;
+  for (int y = yStart; y != yEnd; y += yStep) {
+    for (int x = xStart; x != xEnd; x += xStep) {
+      const int sx = x - dx;
+      const int sy = y - dy;
+      mapFrame[y * kWidth + x] = (sx >= 0 && sx < kWidth && sy >= 0 && sy < kHeight)
+                                     ? mapFrame[sy * kWidth + sx]
+                                     : bg;
+    }
+  }
 }
 
 void moveMapByPixels(int dx, int dy) {
@@ -1831,8 +1892,12 @@ void moveMapByPixels(int dx, int dy) {
   if (radarLon > 180.0) radarLon -= 360.0;
   if (radarLon < -180.0) radarLon += 360.0;
   copyClean(currentPostal, sizeof(currentPostal), "MANUEL", "MANUEL");
-  invalidateLiveData();
-  mapReloadAfterMs = millis() + 1200;
+  shiftMapFrame(dx, dy);
+  mapDirty = true;
+  mapReloadAfterMs = millis() + 900;
+  lastMapFetchMs = 0;
+  updateLivePlanePositions();
+  selectedPlane = -1;
 }
 
 int nearestPlaneAt(uint16_t x, uint16_t y) {
@@ -1957,6 +2022,8 @@ void pollTouch() {
   } else if (!down && touchWasDown) {
     if (mapDragging) {
       saveLocationSettings();
+      mapReloadAfterMs = millis() + 250;
+      lastTrafficFetchMs = 0;
       Serial.printf("[MAP] Centre manuel %.5f,%.5f\n", radarLat, radarLon);
     } else {
       handleTap(touchStartX, touchStartY);
@@ -1982,12 +2049,18 @@ void setup() {
   loadWifiSettings();
   loadLocationSettings();
   connectWifi();
+  initOta();
   bootMs = millis();
   printStatus();
 }
 
 void loop() {
   const uint32_t now = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    initOta();
+    ArduinoOTA.handle();
+  }
 
   if (setupPortalActive) {
     setupServer.handleClient();
@@ -2007,9 +2080,9 @@ void loop() {
     printStatus();
   }
 
-  if (!mapReady && WiFi.status() == WL_CONNECTED && now - bootMs >= 6000 &&
+  if ((!mapReady || mapDirty) && WiFi.status() == WL_CONNECTED && now - bootMs >= 6000 &&
       (mapReloadAfterMs == 0 || now >= mapReloadAfterMs) &&
-      (lastMapFetchMs == 0 || now - lastMapFetchMs >= 60000)) {
+      (lastMapFetchMs == 0 || mapDirty || now - lastMapFetchMs >= 60000)) {
     lastMapFetchMs = now;
     fetchMapTiles();
     drawRadarFrame();
