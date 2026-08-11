@@ -97,6 +97,10 @@ bool mapDirty = false;
 bool mapFetchInProgress = false;
 uint32_t lastTrafficFetchMs = 0;
 bool trafficLive = false;
+volatile bool trafficFetchRequested = false;
+volatile bool trafficFetchInProgress = false;
+volatile bool trafficFrameDirty = false;
+TaskHandle_t trafficTaskHandle = nullptr;
 bool setupPortalActive = false;
 bool otaStarted = false;
 char storedSsid[33] = "";
@@ -972,6 +976,7 @@ void updateLivePlanePositions() {
 void fetchTraffic() {
   if (WiFi.status() != WL_CONNECTED) {
     trafficLive = false;
+    livePlaneCount = 0;
     return;
   }
 
@@ -984,17 +989,15 @@ void fetchTraffic() {
   client.setInsecure();
   HTTPClient http;
   http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
-  http.setTimeout(9000);
+  http.setTimeout(4500);
   if (!http.begin(client, url)) {
     Serial.println("[TRAFFIC] HTTP begin KO");
-    trafficLive = false;
     return;
   }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     Serial.printf("[TRAFFIC] HTTP KO code=%d\n", code);
     http.end();
-    trafficLive = false;
     return;
   }
 
@@ -1005,11 +1008,11 @@ void fetchTraffic() {
   DeserializationError err = deserializeJson(doc, payload);
   if (err) {
     Serial.printf("[TRAFFIC] JSON KO %s bytes=%u\n", err.c_str(), payload.length());
-    trafficLive = false;
     return;
   }
 
   JsonArray aircraft = doc["ac"].as<JsonArray>();
+  static LivePlane fetchedPlanes[kMaxLivePlanes];
   int count = 0;
   for (JsonObject ac : aircraft) {
     if (count >= kMaxLivePlanes) break;
@@ -1017,7 +1020,7 @@ void fetchTraffic() {
 
     const double lat = ac["lat"].as<double>();
     const double lon = ac["lon"].as<double>();
-    LivePlane& p = livePlanes[count];
+    LivePlane& p = fetchedPlanes[count];
     p.lat = lat;
     p.lon = lon;
     if (!updateLivePlanePosition(p)) continue;
@@ -1034,9 +1037,13 @@ void fetchTraffic() {
     ++count;
   }
 
+  for (int i = 0; i < count; ++i) {
+    livePlanes[i] = fetchedPlanes[i];
+  }
   livePlaneCount = count;
   trafficLive = count > 0;
   if (selectedPlane >= aircraftCount()) selectedPlane = -1;
+  trafficFrameDirty = true;
   Serial.printf("[TRAFFIC] %d avion(s) live via airplanes.live\n", livePlaneCount);
 }
 
@@ -2090,6 +2097,35 @@ void pollTouch() {
   touchWasDown = down;
 }
 
+void trafficFetchTask(void*) {
+  for (;;) {
+    if (trafficFetchRequested && !trafficFetchInProgress) {
+      trafficFetchRequested = false;
+      trafficFetchInProgress = true;
+      fetchTraffic();
+      trafficFrameDirty = true;
+      trafficFetchInProgress = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(80));
+  }
+}
+
+void startTrafficTask() {
+  if (trafficTaskHandle != nullptr) return;
+  xTaskCreatePinnedToCore(trafficFetchTask,
+                          "flightdesk-traffic",
+                          12288,
+                          nullptr,
+                          1,
+                          &trafficTaskHandle,
+                          0);
+}
+
+void requestTrafficFetch() {
+  if (trafficFetchInProgress || trafficFetchRequested) return;
+  trafficFetchRequested = true;
+}
+
 }  // namespace
 
 void setup() {
@@ -2106,6 +2142,7 @@ void setup() {
   loadLocationSettings();
   connectWifi();
   initOta();
+  startTrafficTask();
   bootMs = millis();
   printStatus();
 }
@@ -2147,12 +2184,16 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED && now - bootMs >= 3000 &&
       (lastTrafficFetchMs == 0 || now - lastTrafficFetchMs >= 20000)) {
     lastTrafficFetchMs = now;
-    fetchTraffic();
-    drawRadarFrame();
+    requestTrafficFetch();
   } else if (WiFi.status() != WL_CONNECTED && trafficLive) {
+    trafficFetchRequested = false;
     trafficLive = false;
     livePlaneCount = 0;
     selectedPlane = -1;
+  }
+
+  if (trafficFrameDirty) {
+    trafficFrameDirty = false;
   }
 
   if (now - lastI2cScanMs >= 30000) {
@@ -2170,14 +2211,14 @@ void loop() {
     pollImu();
   }
 
-  if (now - lastRadarMs >= 45) {
+  if (now - lastRadarMs >= 33) {
     lastRadarMs = now;
-    sweepDeg += 0.82f;
+    sweepDeg += 3.0f;
     if (sweepDeg >= 360.0f) {
       sweepDeg -= 360.0f;
     }
     drawRadarFrame();
   }
 
-  delay(10);
+  delay(2);
 }
