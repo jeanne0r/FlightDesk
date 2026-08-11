@@ -647,6 +647,20 @@ void blendFillCircle(int cx, int cy, int r, uint16_t color, uint8_t alpha) {
   }
 }
 
+void blendRoundRect(int x, int y, int w, int h, int radius, uint16_t color, uint8_t alpha) {
+  for (int yy = y; yy < y + h; ++yy) {
+    for (int xx = x; xx < x + w; ++xx) {
+      const int anchorX = xx < x + radius ? x + radius : (xx >= x + w - radius ? x + w - radius - 1 : xx);
+      const int anchorY = yy < y + radius ? y + radius : (yy >= y + h - radius ? y + h - radius - 1 : yy);
+      const int dx = xx - anchorX;
+      const int dy = yy - anchorY;
+      if (dx * dx + dy * dy <= radius * radius) {
+        blendPixel(xx, yy, color, alpha);
+      }
+    }
+  }
+}
+
 void putMapPixel(int x, int y, uint16_t color) {
   if (!mapFrame || x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
   mapFrame[y * kWidth + x] = color;
@@ -657,13 +671,13 @@ uint16_t radarTint(uint16_t rgb) {
   const uint8_t g = ((rgb >> 5) & 0x3F) << 2;
   const uint8_t b = (rgb & 0x1F) << 3;
   const uint8_t lum = static_cast<uint8_t>((r * 30 + g * 59 + b * 11) / 100);
-  return rgb565(1 + lum / 24, 13 + lum / 5, 12 + lum / 7);
+  return rgb565(1 + lum / 34, 8 + lum / 8, 11 + lum / 11);
 }
 
 void clearMapFrame() {
   if (!mapFrame) return;
   for (int i = 0; i < kWidth * kHeight; ++i) {
-    mapFrame[i] = rgb565(1, 10, 10);
+    mapFrame[i] = rgb565(0, 6, 8);
   }
 }
 
@@ -1201,8 +1215,8 @@ void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
-  fillRoundRect(72, 96, 336, 276, 22, panel);
-  drawRoundRect(72, 96, 336, 276, 22, rgb565(68, 190, 92));
+  blendRoundRect(72, 96, 336, 276, 22, rgb565(0, 10, 9), 232);
+  drawRoundRect(72, 96, 336, 276, 22, rgb565(62, 176, 98));
   if (appView == AppView::Settings) {
     drawTextCentered(240, 120, "REGLAGES", green, 2);
     drawText(104, 150, "NPA", green, 2);
@@ -1216,7 +1230,7 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
     drawText(214, 206, WiFi.status() == WL_CONNECTED ? "OK" : "KO", text, 2);
     drawText(104, 234, "SOURCE", green, 2);
     drawText(214, 234, trafficLive ? "LIVE" : "SIM", text, 2);
-    fillRoundRect(126, 260, 228, 34, 12, rgb565(2, 20, 15));
+    blendRoundRect(126, 260, 228, 34, 12, rgb565(1, 15, 12), 232);
     drawRoundRect(126, 260, 228, 34, 12, rgb565(70, 220, 104));
     drawTextCentered(240, 271, "WIFI SETUP", text, 1);
     if (setupPortalActive) {
@@ -1225,7 +1239,7 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
     } else {
       drawTextCentered(240, 310, activeWifiSsid(), text, 1);
     }
-    fillRoundRect(144, 334, 192, 30, 12, rgb565(2, 20, 15));
+    blendRoundRect(144, 334, 192, 30, 12, rgb565(1, 15, 12), 232);
     drawRoundRect(144, 334, 192, 30, 12, rgb565(70, 220, 104));
     drawTextCentered(240, 345, "FERMER", text, 1);
     return;
@@ -1245,7 +1259,7 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
     drawText(112, 168, "Version simple", text, 2);
     drawText(112, 198, "sans audio ici.", text, 2);
   }
-  fillRoundRect(144, 304, 192, 42, 14, rgb565(2, 20, 15));
+  blendRoundRect(144, 304, 192, 42, 14, rgb565(1, 15, 12), 232);
   drawRoundRect(144, 304, 192, 42, 14, rgb565(70, 220, 104));
   drawTextCentered(240, 317, "FERMER", text, 2);
 }
@@ -1253,7 +1267,7 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
 void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   if (selectedPlane < 0 || selectedPlane >= aircraftCount()) return;
   char line[40];
-  fillRoundRect(52, 124, 376, 214, 18, panel);
+  blendRoundRect(52, 124, 376, 214, 18, rgb565(0, 10, 9), 238);
   drawRoundRect(52, 124, 376, 214, 18, rgb565(76, 210, 102));
   drawText(82, 148, "AVION SELECTIONNE", green, 2);
   drawText(82, 184, planeCallsign(selectedPlane), green, 4);
@@ -1264,7 +1278,7 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   snprintf(line, sizeof(line), "%dM  %dDEG", planeAltitudeM(selectedPlane), planeHeading(selectedPlane) + 90);
   drawText(82, 312, line, text, 2);
 
-  fillRoundRect(286, 218, 106, 70, 12, rgb565(8, 32, 26));
+  blendRoundRect(286, 218, 106, 70, 12, rgb565(8, 32, 26), 222);
   drawRoundRect(286, 218, 106, 70, 12, rgb565(88, 220, 116));
   drawTextCentered(339, 240, "PHOTO", green, 1);
   drawTextCentered(339, 258, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
@@ -1273,10 +1287,10 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   drawThickLine(px - 34, py, px + 34, py - 12, green);
   drawThickLine(px - 4, py - 4, px + 20, py + 15, green);
 
-  fillRoundRect(336, 144, 34, 34, 13, rgb565(2, 24, 16));
+  blendRoundRect(336, 144, 34, 34, 13, rgb565(2, 24, 16), 226);
   drawRoundRect(336, 144, 34, 34, 13, green);
   drawTextCentered(353, 153, "*", text, 2);
-  fillRoundRect(378, 144, 34, 34, 13, rgb565(2, 24, 16));
+  blendRoundRect(378, 144, 34, 34, 13, rgb565(2, 24, 16), 226);
   drawRoundRect(378, 144, 34, 34, 13, green);
   drawTextCentered(395, 153, "X", text, 2);
 }
@@ -1291,7 +1305,7 @@ void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
   for (int i = 0; i < 5; ++i) {
     const int x = startX + i * (width + gap);
     const bool active = static_cast<int>(appView) == i;
-    fillRoundRect(x, y, width, height, 12, active ? rgb565(4, 28, 18) : panel);
+    blendRoundRect(x, y, width, height, 12, active ? rgb565(4, 28, 18) : rgb565(1, 10, 10), active ? 232 : 210);
     drawRoundRect(x, y, width, height, 12, active ? green : rgb565(20, 58, 38));
     drawTextCentered(x + width / 2, y + 10, labels[i], active ? green : rgb565(178, 206, 188), 1);
   }
@@ -1325,10 +1339,10 @@ void drawRadarFrame() {
   constexpr int cy = kRadarCy;
   constexpr int r = kRadarRadius;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(132, 255, 116);
-  const uint16_t softGreen = rgb565(76, 214, 114);
-  const uint16_t glow = rgb565(42, 150, 62);
-  const uint16_t dim = rgb565(5, 38, 30);
+  const uint16_t green = rgb565(102, 255, 136);
+  const uint16_t softGreen = rgb565(55, 185, 118);
+  const uint16_t glow = rgb565(28, 130, 74);
+  const uint16_t dim = rgb565(4, 30, 31);
   const uint16_t panel = rgb565(1, 11, 10);
   const uint16_t text = rgb565(225, 244, 228);
 
@@ -1340,15 +1354,17 @@ void drawRadarFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 120 * 120 ? 18 : (d2 < 190 * 190 ? 13 : 8);
-        const uint8_t blue = d2 < 160 * 160 ? 18 : 13;
+        const uint8_t shade = d2 < 120 * 120 ? 14 : (d2 < 190 * 190 ? 10 : 7);
+        const uint8_t blue = d2 < 160 * 160 ? 20 : 15;
         frame[y * kWidth + x] = rgb565(1, shade, blue);
       }
     }
   }
 
-  fillCircle(cx, cy, r - 8, rgb565(1, 11, 12));
-  blendEmbeddedMap(176);
+  fillCircle(cx, cy, r - 8, rgb565(1, 9, 12));
+  if (!mapReady) {
+    blendEmbeddedMap(92);
+  }
   if (mapReady && mapFrame) {
     for (int y = 0; y < kHeight; ++y) {
       for (int x = 0; x < kWidth; ++x) {
@@ -1356,14 +1372,14 @@ void drawRadarFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 24);
+          frame[index] = blend565(frame[index], mapFrame[index], 76);
         }
       }
     }
   }
-  blendFillCircle(cx, cy, 204, rgb565(0, 8, 8), 72);
-  blendFillCircle(cx, cy, 194, rgb565(6, 43, 28), 22);
-  blendFillCircle(cx, cy, 118, rgb565(8, 56, 34), 16);
+  blendFillCircle(cx, cy, 214, rgb565(0, 5, 7), 52);
+  blendFillCircle(cx, cy, 198, rgb565(4, 34, 28), 16);
+  blendFillCircle(cx, cy, 118, rgb565(6, 48, 35), 10);
 
   drawCircle(cx, cy, r, green);
   drawCircle(cx, cy, r - 1, softGreen);
@@ -1401,10 +1417,10 @@ void drawRadarFrame() {
     const int rightX = x + static_cast<int>(cosf(ar - 2.55f) * 10);
     const int rightY = y + static_cast<int>(sinf(ar - 2.55f) * 10);
     if (planeIndex == selectedPlane) {
-      drawCircle(x, y, 24, green);
-      blendThickLine(cx, cy, x, y, glow, 140);
+      drawCircle(x, y, 22, softGreen);
+      blendThickLine(cx, cy, x, y, glow, 110);
     }
-    blendFillCircle(x, y, planeIndex == selectedPlane ? 20 : 13, green, planeIndex == selectedPlane ? 28 : 12);
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 18 : 11, green, planeIndex == selectedPlane ? 34 : 12);
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(0, 8, 6));
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(205, 255, 202));
     drawLine(noseX, noseY, leftX, leftY, green);
