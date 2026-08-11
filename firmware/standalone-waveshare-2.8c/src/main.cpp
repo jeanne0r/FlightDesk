@@ -62,6 +62,7 @@ spi_device_handle_t lcdSpi = nullptr;
 esp_lcd_panel_handle_t lcdPanel = nullptr;
 uint16_t* frame = nullptr;
 uint16_t* mapFrame = nullptr;
+uint16_t* radarBaseFrame = nullptr;
 uint8_t* tileBuffer = nullptr;
 size_t tileBufferSize = 0;
 PNG png;
@@ -94,6 +95,7 @@ float accY = 0.0f;
 float accZ = 0.0f;
 bool mapReady = false;
 bool mapDirty = false;
+bool radarBaseDirty = true;
 bool mapFetchInProgress = false;
 uint32_t lastTrafficFetchMs = 0;
 bool trafficLive = false;
@@ -828,6 +830,7 @@ void fetchMapTiles() {
   if (mapReady) {
     mapDirty = false;
   }
+  radarBaseDirty = true;
   mapFetchInProgress = false;
   Serial.printf("[MAP] Tiles %d/%d ready=%d\n", ok, total, mapReady);
 }
@@ -1389,12 +1392,14 @@ void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_
   }
 }
 
-float angleDistanceDeg(float a, float b) {
-  float d = fmodf(a - b + 540.0f, 360.0f) - 180.0f;
-  return fabsf(d);
+float clockwiseLagDeg(float pixelDeg, float headDeg) {
+  float lag = fmodf(headDeg - pixelDeg + 360.0f, 360.0f);
+  if (lag < 0.0f) lag += 360.0f;
+  return lag;
 }
 
 void blendRadarSweep(int cx, int cy, int radius, float angleDeg, uint16_t color) {
+  constexpr float kTrailDeg = 64.0f;
   const int rr = radius * radius;
   const int inner = 15 * 15;
   for (int y = cy - radius; y <= cy + radius; y += 2) {
@@ -1405,10 +1410,10 @@ void blendRadarSweep(int cx, int cy, int radius, float angleDeg, uint16_t color)
       if (d2 > rr || d2 < inner) continue;
       float a = atan2f(static_cast<float>(dy), static_cast<float>(dx)) / DEG_TO_RAD;
       if (a < 0.0f) a += 360.0f;
-      const float delta = angleDistanceDeg(a, angleDeg);
-      if (delta > 58.0f) continue;
+      const float lag = clockwiseLagDeg(a, angleDeg);
+      if (lag > kTrailDeg) continue;
 
-      const float angular = 1.0f - delta / 58.0f;
+      const float angular = 1.0f - lag / kTrailDeg;
       const float radial = 0.35f + 0.65f * (static_cast<float>(d2) / rr);
       const uint8_t alpha = static_cast<uint8_t>(6 + 48.0f * angular * angular * radial);
       blendPixel(x, y, color, alpha);
@@ -1419,8 +1424,11 @@ void blendRadarSweep(int cx, int cy, int radius, float angleDeg, uint16_t color)
   }
 }
 
-void drawRadarFrame() {
-  if (!frame || !lcdPanel) return;
+void buildRadarBaseFrame() {
+  if (!radarBaseFrame) return;
+
+  uint16_t* drawFrame = frame;
+  frame = radarBaseFrame;
 
   constexpr int cx = kRadarCx;
   constexpr int cy = kRadarCy;
@@ -1428,10 +1436,7 @@ void drawRadarFrame() {
   const uint16_t black = rgb565(0, 2, 3);
   const uint16_t green = rgb565(108, 255, 170);
   const uint16_t softGreen = rgb565(48, 205, 146);
-  const uint16_t glow = rgb565(18, 165, 110);
   const uint16_t dim = rgb565(9, 54, 56);
-  const uint16_t panel = rgb565(1, 11, 10);
-  const uint16_t text = rgb565(225, 244, 228);
 
   for (int y = 0; y < kHeight; ++y) {
     for (int x = 0; x < kWidth; ++x) {
@@ -1483,6 +1488,33 @@ void drawRadarFrame() {
     const float rad = a * DEG_TO_RAD;
     blendLine(cx + cosf(rad) * 16, cy + sinf(rad) * 16,
               cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 48);
+  }
+
+  frame = drawFrame;
+  radarBaseDirty = false;
+}
+
+void drawRadarFrame() {
+  if (!frame || !lcdPanel) return;
+
+  constexpr int cx = kRadarCx;
+  constexpr int cy = kRadarCy;
+  constexpr int r = kRadarRadius;
+  const uint16_t black = rgb565(0, 2, 3);
+  const uint16_t green = rgb565(108, 255, 170);
+  const uint16_t softGreen = rgb565(48, 205, 146);
+  const uint16_t glow = rgb565(18, 165, 110);
+  const uint16_t dim = rgb565(9, 54, 56);
+  const uint16_t panel = rgb565(1, 11, 10);
+  const uint16_t text = rgb565(225, 244, 228);
+
+  if (!radarBaseFrame || radarBaseDirty) {
+    buildRadarBaseFrame();
+  }
+  if (radarBaseFrame) {
+    memcpy(frame, radarBaseFrame, kWidth * kHeight * sizeof(uint16_t));
+  } else {
+    fillCircle(cx, cy, r, black);
   }
 
   blendRadarSweep(cx, cy, r - 14, sweepDeg, rgb565(22, 245, 178));
@@ -1641,6 +1673,12 @@ bool initDisplay() {
     Serial.println("[DISPLAY] Map framebuffer PSRAM KO");
     return false;
   }
+  radarBaseFrame = static_cast<uint16_t*>(heap_caps_malloc(kWidth * kHeight * sizeof(uint16_t),
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!radarBaseFrame) {
+    Serial.println("[DISPLAY] Radar base framebuffer PSRAM KO");
+    return false;
+  }
   tileBufferSize = 220 * 1024;
   tileBuffer = static_cast<uint8_t*>(heap_caps_malloc(tileBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!tileBuffer) {
@@ -1726,12 +1764,14 @@ void loadLocationSettings() {
   copyClean(currentPostal, sizeof(currentPostal), npa.c_str(), "1188");
   radarLat = lat;
   radarLon = lon;
+  radarBaseDirty = true;
 }
 
 void changePostal(int delta) {
   applyPostalIndex(postalIndex + delta);
   saveLocationSettings();
   mapReady = false;
+  radarBaseDirty = true;
   mapReloadAfterMs = 0;
   lastMapFetchMs = 0;
   lastTrafficFetchMs = 0;
@@ -1920,6 +1960,7 @@ void invalidateLiveData() {
   trafficLive = false;
   livePlaneCount = 0;
   selectedPlane = -1;
+  radarBaseDirty = true;
 }
 
 void shiftMapFrame(int dx, int dy) {
@@ -1957,6 +1998,7 @@ void moveMapByPixels(int dx, int dy) {
   copyClean(currentPostal, sizeof(currentPostal), "MANUEL", "MANUEL");
   shiftMapFrame(dx, dy);
   mapDirty = true;
+  radarBaseDirty = true;
   mapReloadAfterMs = millis() + 900;
   lastMapFetchMs = 0;
   updateLivePlanePositions();
@@ -2211,9 +2253,10 @@ void loop() {
     pollImu();
   }
 
-  if (now - lastRadarMs >= 33) {
+  if (now - lastRadarMs >= 28) {
+    const uint32_t elapsedMs = lastRadarMs == 0 ? 28 : now - lastRadarMs;
     lastRadarMs = now;
-    sweepDeg += 3.0f;
+    sweepDeg += min<uint32_t>(elapsedMs, 80) * 0.115f;
     if (sweepDeg >= 360.0f) {
       sweepDeg -= 360.0f;
     }
