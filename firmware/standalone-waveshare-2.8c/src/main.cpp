@@ -111,7 +111,7 @@ constexpr double kHomeLon = 6.3077;
 constexpr int kRangeKm = 50;
 constexpr int kRadarCx = 240;
 constexpr int kRadarCy = 240;
-constexpr int kRadarRadius = 218;
+constexpr int kRadarRadius = 234;
 int pngTileScreenX = 0;
 int pngTileScreenY = 0;
 double radarLat = kHomeLat;
@@ -671,7 +671,7 @@ uint16_t radarTint(uint16_t rgb) {
   const uint8_t g = ((rgb >> 5) & 0x3F) << 2;
   const uint8_t b = (rgb & 0x1F) << 3;
   const uint8_t lum = static_cast<uint8_t>((r * 30 + g * 59 + b * 11) / 100);
-  return rgb565(1 + lum / 34, 8 + lum / 8, 11 + lum / 11);
+  return rgb565(1 + lum / 42, 6 + lum / 10, 9 + lum / 13);
 }
 
 void clearMapFrame() {
@@ -1377,12 +1377,12 @@ void drawRadarFrame() {
       }
     }
   }
-  blendFillCircle(cx, cy, 214, rgb565(0, 5, 7), 52);
-  blendFillCircle(cx, cy, 198, rgb565(4, 34, 28), 16);
-  blendFillCircle(cx, cy, 118, rgb565(6, 48, 35), 10);
+  blendFillCircle(cx, cy, r - 8, rgb565(0, 5, 7), 70);
+  blendFillCircle(cx, cy, r - 24, rgb565(4, 30, 28), 18);
+  blendFillCircle(cx, cy, r / 2, rgb565(6, 42, 34), 8);
 
   drawCircle(cx, cy, r, green);
-  drawCircle(cx, cy, r - 1, softGreen);
+  drawCircle(cx, cy, r - 2, softGreen);
   drawCircle(cx, cy, r - 5, dim);
   drawCircle(cx, cy, r - 12, rgb565(1, 18, 16));
 
@@ -1396,14 +1396,14 @@ void drawRadarFrame() {
               cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 42);
   }
 
-  fillWedge(cx, cy, r - 12, sweepDeg - 45.0f, sweepDeg - 30.0f, rgb565(2, 30, 29));
-  fillWedge(cx, cy, r - 12, sweepDeg - 30.0f, sweepDeg - 15.0f, rgb565(4, 52, 45));
-  fillWedge(cx, cy, r - 12, sweepDeg - 15.0f, sweepDeg, rgb565(10, 82, 62));
+  fillWedge(cx, cy, r - 14, sweepDeg - 45.0f, sweepDeg - 30.0f, rgb565(1, 24, 26));
+  fillWedge(cx, cy, r - 14, sweepDeg - 30.0f, sweepDeg - 15.0f, rgb565(3, 42, 40));
+  fillWedge(cx, cy, r - 14, sweepDeg - 15.0f, sweepDeg, rgb565(8, 72, 58));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   blendThickLine(cx, cy,
-                 cx + static_cast<int>(cosf(sweepRad) * (r - 8)),
-                 cy + static_cast<int>(sinf(sweepRad) * (r - 8)),
-                 green, 205);
+                 cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
+                 cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
+                 green, 180);
 
   const int count = aircraftCount();
   for (int planeIndex = 0; planeIndex < count; ++planeIndex) {
@@ -2041,9 +2041,9 @@ void loop() {
     pollImu();
   }
 
-  if (now - lastRadarMs >= 300) {
+  if (now - lastRadarMs >= 80) {
     lastRadarMs = now;
-    sweepDeg += 4.0f;
+    sweepDeg += 1.35f;
     if (sweepDeg >= 360.0f) {
       sweepDeg -= 360.0f;
     }
