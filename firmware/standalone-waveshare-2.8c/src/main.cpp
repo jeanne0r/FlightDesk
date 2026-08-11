@@ -613,6 +613,19 @@ void drawCircle(int cx, int cy, int r, uint16_t color) {
   } while (x < 0);
 }
 
+void blendCircle(int cx, int cy, int r, uint16_t color, uint8_t alpha) {
+  int x = -r, y = 0, err = 2 - 2 * r;
+  do {
+    blendPixel(cx - x, cy + y, color, alpha);
+    blendPixel(cx - y, cy - x, color, alpha);
+    blendPixel(cx + x, cy - y, color, alpha);
+    blendPixel(cx + y, cy + x, color, alpha);
+    int e2 = err;
+    if (e2 <= y) err += ++y * 2 + 1;
+    if (e2 > x || err > y) err += ++x * 2 + 1;
+  } while (x < 0);
+}
+
 void fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t color) {
   int minX = min(x0, min(x1, x2));
   int maxX = max(x0, max(x1, x2));
@@ -1173,7 +1186,15 @@ void drawText(int x, int y, const char* text, uint16_t color, int scale = 1) {
         if (bits & (1 << (4 - col))) {
           for (int yy = 0; yy < scale; ++yy) {
             for (int xx = 0; xx < scale; ++xx) {
-              putPixel(x + i * 6 * scale + col * scale + xx, y + row * scale + yy, color);
+              const int px = x + i * 6 * scale + col * scale + xx;
+              const int py = y + row * scale + yy;
+              if (scale <= 2) {
+                blendPixel(px - 1, py, color, 34);
+                blendPixel(px + 1, py, color, 34);
+                blendPixel(px, py - 1, color, 28);
+                blendPixel(px, py + 1, color, 28);
+              }
+              putPixel(px, py, color);
             }
           }
         }
@@ -1298,19 +1319,19 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   char line[40];
   blendRoundRect(52, 124, 376, 214, 18, rgb565(0, 10, 9), 238);
   drawRoundRect(52, 124, 376, 214, 18, rgb565(76, 210, 102));
-  drawText(82, 148, "AVION SELECTIONNE", green, 2);
-  drawText(82, 184, planeCallsign(selectedPlane), green, 4);
-  drawText(82, 232, planeType(selectedPlane), text, 2);
-  drawText(82, 260, planeRoute(selectedPlane), text, 1);
+  drawText(82, 148, "AVION SELECTIONNE", green, 1);
+  drawText(82, 178, planeCallsign(selectedPlane), green, 3);
+  drawText(82, 222, planeType(selectedPlane), text, 1);
+  drawText(82, 244, planeRoute(selectedPlane), text, 1);
   snprintf(line, sizeof(line), "%dKM  %dKMH", planeDistanceKm(selectedPlane), planeSpeedKmh(selectedPlane));
-  drawText(82, 288, line, text, 2);
+  drawText(82, 278, line, text, 1);
   snprintf(line, sizeof(line), "%dM  %dDEG", planeAltitudeM(selectedPlane), planeHeading(selectedPlane) + 90);
-  drawText(82, 312, line, text, 2);
+  drawText(82, 304, line, text, 1);
 
   blendRoundRect(286, 218, 106, 70, 12, rgb565(8, 32, 26), 222);
   drawRoundRect(286, 218, 106, 70, 12, rgb565(88, 220, 116));
-  drawTextCentered(339, 240, "PHOTO", green, 1);
-  drawTextCentered(339, 258, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
+  drawTextCentered(339, 238, "PHOTO", green, 1);
+  drawTextCentered(339, 256, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
   const int px = 338;
   const int py = 274;
   drawThickLine(px - 34, py, px + 34, py - 12, green);
@@ -1361,6 +1382,36 @@ void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_
   }
 }
 
+float angleDistanceDeg(float a, float b) {
+  float d = fmodf(a - b + 540.0f, 360.0f) - 180.0f;
+  return fabsf(d);
+}
+
+void blendRadarSweep(int cx, int cy, int radius, float angleDeg, uint16_t color) {
+  const int rr = radius * radius;
+  const int inner = 15 * 15;
+  for (int y = cy - radius; y <= cy + radius; y += 2) {
+    for (int x = cx - radius; x <= cx + radius; x += 2) {
+      const int dx = x - cx;
+      const int dy = y - cy;
+      const int d2 = dx * dx + dy * dy;
+      if (d2 > rr || d2 < inner) continue;
+      float a = atan2f(static_cast<float>(dy), static_cast<float>(dx)) / DEG_TO_RAD;
+      if (a < 0.0f) a += 360.0f;
+      const float delta = angleDistanceDeg(a, angleDeg);
+      if (delta > 58.0f) continue;
+
+      const float angular = 1.0f - delta / 58.0f;
+      const float radial = 0.35f + 0.65f * (static_cast<float>(d2) / rr);
+      const uint8_t alpha = static_cast<uint8_t>(6 + 48.0f * angular * angular * radial);
+      blendPixel(x, y, color, alpha);
+      blendPixel(x + 1, y, color, alpha);
+      blendPixel(x, y + 1, color, alpha);
+      blendPixel(x + 1, y + 1, color, alpha);
+    }
+  }
+}
+
 void drawRadarFrame() {
   if (!frame || !lcdPanel) return;
 
@@ -1368,10 +1419,10 @@ void drawRadarFrame() {
   constexpr int cy = kRadarCy;
   constexpr int r = kRadarRadius;
   const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(102, 255, 136);
-  const uint16_t softGreen = rgb565(55, 185, 118);
-  const uint16_t glow = rgb565(28, 130, 74);
-  const uint16_t dim = rgb565(4, 30, 31);
+  const uint16_t green = rgb565(108, 255, 170);
+  const uint16_t softGreen = rgb565(48, 205, 146);
+  const uint16_t glow = rgb565(18, 165, 110);
+  const uint16_t dim = rgb565(9, 54, 56);
   const uint16_t panel = rgb565(1, 11, 10);
   const uint16_t text = rgb565(225, 244, 228);
 
@@ -1401,38 +1452,42 @@ void drawRadarFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 76);
+          frame[index] = blend565(frame[index], mapFrame[index], 58);
         }
       }
     }
   }
-  blendFillCircle(cx, cy, r - 8, rgb565(0, 5, 7), 70);
-  blendFillCircle(cx, cy, r - 24, rgb565(4, 30, 28), 18);
-  blendFillCircle(cx, cy, r / 2, rgb565(6, 42, 34), 8);
+  blendFillCircle(cx, cy, r - 8, rgb565(0, 4, 6), 86);
+  blendFillCircle(cx, cy, r - 24, rgb565(7, 42, 38), 20);
+  blendFillCircle(cx, cy, r / 2, rgb565(8, 54, 42), 9);
 
   drawCircle(cx, cy, r, green);
-  drawCircle(cx, cy, r - 2, softGreen);
-  drawCircle(cx, cy, r - 5, dim);
-  drawCircle(cx, cy, r - 12, rgb565(1, 18, 16));
+  blendCircle(cx, cy, r - 1, green, 140);
+  blendCircle(cx, cy, r - 3, softGreen, 80);
+  blendCircle(cx, cy, r - 8, dim, 90);
+  blendCircle(cx, cy, r - 16, rgb565(1, 24, 20), 120);
 
   for (int ring = r / 4; ring <= r; ring += r / 4) {
-    drawCircle(cx, cy, ring, dim);
+    blendCircle(cx, cy, ring, softGreen, 58);
+    blendCircle(cx, cy, ring + 1, dim, 38);
   }
 
   for (int a = 0; a < 360; a += 30) {
     const float rad = a * DEG_TO_RAD;
     blendLine(cx + cosf(rad) * 16, cy + sinf(rad) * 16,
-              cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 42);
+              cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 48);
   }
 
-  fillWedge(cx, cy, r - 14, sweepDeg - 45.0f, sweepDeg - 30.0f, rgb565(1, 24, 26));
-  fillWedge(cx, cy, r - 14, sweepDeg - 30.0f, sweepDeg - 15.0f, rgb565(3, 42, 40));
-  fillWedge(cx, cy, r - 14, sweepDeg - 15.0f, sweepDeg, rgb565(8, 72, 58));
+  blendRadarSweep(cx, cy, r - 14, sweepDeg, rgb565(22, 245, 178));
   const float sweepRad = sweepDeg * DEG_TO_RAD;
-  blendThickLine(cx, cy,
-                 cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
-                 cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
-                 green, 180);
+  blendLine(cx, cy,
+            cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
+            cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
+            green, 170);
+  blendLine(cx + 1, cy,
+            cx + 1 + static_cast<int>(cosf(sweepRad) * (r - 10)),
+            cy + static_cast<int>(sinf(sweepRad) * (r - 10)),
+            green, 70);
 
   const int count = aircraftCount();
   for (int planeIndex = 0; planeIndex < count; ++planeIndex) {
@@ -1449,7 +1504,8 @@ void drawRadarFrame() {
       drawCircle(x, y, 22, softGreen);
       blendThickLine(cx, cy, x, y, glow, 110);
     }
-    blendFillCircle(x, y, planeIndex == selectedPlane ? 18 : 11, green, planeIndex == selectedPlane ? 34 : 12);
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 19 : 13, glow, planeIndex == selectedPlane ? 46 : 20);
+    blendFillCircle(x, y, planeIndex == selectedPlane ? 14 : 9, green, planeIndex == selectedPlane ? 28 : 12);
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(0, 8, 6));
     fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(205, 255, 202));
     drawLine(noseX, noseY, leftX, leftY, green);
@@ -1460,8 +1516,8 @@ void drawRadarFrame() {
   snprintf(countText, sizeof(countText), "%d", count);
   drawTextCentered(cx, 48, "18:47", text, 1);
   drawTextCentered(cx, 67, trafficLive ? "LIVE AIRPLANES" : "TRAFIC SIMULE", softGreen, 1);
-  drawTextCentered(cx, 88, countText, green, 3);
-  drawTextCentered(cx, 120, "AVIONS", green, 2);
+  drawTextCentered(cx, 90, countText, green, 2);
+  drawTextCentered(cx, 116, "AVIONS", green, 2);
   drawText(cx + r * 41 / 100, cy + 3, "20", softGreen, 1);
   drawText(cx + r * 72 / 100, cy + 3, "50", softGreen, 1);
   drawText(cx + r * 73 / 100, cy + 20, "KM", softGreen, 1);
@@ -2114,9 +2170,9 @@ void loop() {
     pollImu();
   }
 
-  if (now - lastRadarMs >= 80) {
+  if (now - lastRadarMs >= 45) {
     lastRadarMs = now;
-    sweepDeg += 1.35f;
+    sweepDeg += 0.82f;
     if (sweepDeg >= 360.0f) {
       sweepDeg -= 360.0f;
     }
