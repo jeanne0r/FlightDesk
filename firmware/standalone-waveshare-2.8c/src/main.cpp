@@ -994,6 +994,28 @@ void updateLivePlanePositions() {
   if (selectedPlane >= livePlaneCount) selectedPlane = -1;
 }
 
+bool fetchTrafficPayload(const char* provider, const char* url, String& payload) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
+  http.setTimeout(4500);
+  if (!http.begin(client, url)) {
+    Serial.printf("[TRAFFIC] %s begin KO\n", provider);
+    return false;
+  }
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[TRAFFIC] %s HTTP KO code=%d\n", provider, code);
+    http.end();
+    return false;
+  }
+  payload = http.getString();
+  http.end();
+  Serial.printf("[TRAFFIC] payload OK via %s bytes=%u\n", provider, payload.length());
+  return true;
+}
+
 void fetchTraffic() {
   if (WiFi.status() != WL_CONNECTED) {
     trafficLive = false;
@@ -1001,29 +1023,26 @@ void fetchTraffic() {
     return;
   }
 
-  char url[128];
+  char url[2][144];
   const int radiusNm = max(1, static_cast<int>(round(kRangeKm / 1.852)));
-  snprintf(url, sizeof(url), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
+  snprintf(url[0], sizeof(url[0]), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
+           radarLat, radarLon, radiusNm);
+  snprintf(url[1], sizeof(url[1]), "https://opendata.adsb.fi/api/v2/lat/%.5f/lon/%.5f/dist/%d",
            radarLat, radarLon, radiusNm);
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
-  http.setTimeout(4500);
-  if (!http.begin(client, url)) {
-    Serial.println("[TRAFFIC] HTTP begin KO");
+  String payload;
+  const char* provider = nullptr;
+  if (fetchTrafficPayload("airplanes.live", url[0], payload)) {
+    provider = "airplanes.live";
+  } else if (fetchTrafficPayload("adsb.fi", url[1], payload)) {
+    provider = "adsb.fi";
+  } else {
+    trafficLive = false;
+    livePlaneCount = 0;
+    trafficFrameDirty = true;
+    Serial.println("[TRAFFIC] all live providers KO, fallback simulation");
     return;
   }
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("[TRAFFIC] HTTP KO code=%d\n", code);
-    http.end();
-    return;
-  }
-
-  const String payload = http.getString();
-  http.end();
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, payload);
@@ -1033,6 +1052,7 @@ void fetchTraffic() {
   }
 
   JsonArray aircraft = doc["ac"].as<JsonArray>();
+  if (aircraft.isNull()) aircraft = doc["aircraft"].as<JsonArray>();
   static LivePlane fetchedPlanes[kMaxLivePlanes];
   int count = 0;
   for (JsonObject ac : aircraft) {
@@ -1066,7 +1086,7 @@ void fetchTraffic() {
   trafficLive = count > 0;
   if (selectedPlane >= aircraftCount()) selectedPlane = -1;
   trafficFrameDirty = true;
-  Serial.printf("[TRAFFIC] %d avion(s) live via airplanes.live\n", livePlaneCount);
+  Serial.printf("[TRAFFIC] %d avion(s) live via %s\n", livePlaneCount, provider);
 }
 
 bool httpsGetJson(const char* url, JsonDocument& doc) {
@@ -1465,16 +1485,13 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
     blendRoundRect(286, 218, 106, 70, 12, rgb565(0, 30, 18), 54);
   } else {
     drawTextCentered(339, 238, "PHOTO", green, 1);
-    drawTextCentered(339, 256, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
+    drawTextCentered(339, 256, trafficLive ? livePlanes[selectedPlane].photo : "SANS PHOTO", text, 1);
     const int px = 338;
     const int py = 274;
     drawThickLine(px - 34, py, px + 34, py - 12, green);
     drawThickLine(px - 4, py - 4, px + 20, py + 15, green);
   }
 
-  blendRoundRect(336, 144, 34, 34, 13, rgb565(2, 24, 16), 226);
-  drawRoundRect(336, 144, 34, 34, 13, green);
-  drawTextCentered(353, 153, "*", text, 2);
   blendRoundRect(378, 144, 34, 34, 13, rgb565(2, 24, 16), 226);
   drawRoundRect(378, 144, 34, 34, 13, green);
   drawTextCentered(395, 153, "X", text, 2);
