@@ -2,6 +2,7 @@
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <JPEGDEC.h>
 #include <PNGdec.h>
 #include <Preferences.h>
 #include <WebServer.h>
@@ -66,7 +67,12 @@ uint16_t* radarBaseFrame = nullptr;
 uint8_t* radarAngleBins = nullptr;
 uint8_t* tileBuffer = nullptr;
 size_t tileBufferSize = 0;
+uint8_t* jpegBuffer = nullptr;
+size_t jpegBufferSize = 0;
+uint16_t* selectedPhotoFrame = nullptr;
+int selectedPhotoIndex = -1;
 PNG png;
+JPEGDEC jpeg;
 Preferences prefs;
 WebServer setupServer(80);
 
@@ -106,6 +112,9 @@ volatile bool trafficFrameDirty = false;
 TaskHandle_t trafficTaskHandle = nullptr;
 volatile bool mapFetchRequested = false;
 TaskHandle_t mapTaskHandle = nullptr;
+volatile int enrichRequestedPlane = -1;
+volatile bool enrichInProgress = false;
+TaskHandle_t enrichTaskHandle = nullptr;
 bool setupPortalActive = false;
 bool otaStarted = false;
 char storedSsid[33] = "";
@@ -126,6 +135,8 @@ constexpr int kRadarCy = 240;
 constexpr int kRadarRadius = 234;
 constexpr int kSweepBins = 240;
 constexpr int kSweepTrailBins = 43;
+constexpr int kPhotoW = 106;
+constexpr int kPhotoH = 70;
 int pngTileScreenX = 0;
 int pngTileScreenY = 0;
 double radarLat = kHomeLat;
@@ -181,6 +192,7 @@ struct LivePlane {
   char type[20];
   char route[36];
   char photo[16];
+  char photoUrl[160];
   int distanceKm;
   int altitudeM;
   int speedKmh;
@@ -202,6 +214,7 @@ enum class AppView : uint8_t {
 AppView appView = AppView::Radar;
 
 const char* activeWifiSsid();
+void requestPlaneEnrich(int index);
 
 void pcaWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kTca9554Address);
@@ -1038,7 +1051,8 @@ void fetchTraffic() {
     copyClean(p.callsign, sizeof(p.callsign), ac["flight"] | ac["r"] | ac["hex"] | "", "VOL");
     copyClean(p.type, sizeof(p.type), ac["t"] | ac["desc"] | "", "TYPE INCONNU");
     formatRoute(p.route, sizeof(p.route), ac["route"] | "");
-    copyClean(p.photo, sizeof(p.photo), "", "PHOTO ?");
+    copyClean(p.photo, sizeof(p.photo), "", "INFO...");
+    p.photoUrl[0] = '\0';
     p.altitudeM = static_cast<int>(round((ac["alt_baro"] | ac["alt_geom"] | 0) * 0.3048));
     p.speedKmh = static_cast<int>(round((ac["gs"] | 0) * 1.852));
     p.enriched = false;
@@ -1073,9 +1087,87 @@ bool httpsGetJson(const char* url, JsonDocument& doc) {
   return !deserializeJson(doc, payload);
 }
 
+int jpegDrawPhoto(JPEGDRAW* draw) {
+  if (!selectedPhotoFrame) return 0;
+  const int dstX = draw->x;
+  const int dstY = draw->y;
+  for (int y = 0; y < draw->iHeight; ++y) {
+    const int py = dstY + y;
+    if (py < 0 || py >= kPhotoH) continue;
+    for (int x = 0; x < draw->iWidth; ++x) {
+      const int px = dstX + x;
+      if (px < 0 || px >= kPhotoW) continue;
+      selectedPhotoFrame[py * kPhotoW + px] = draw->pPixels[y * draw->iWidth + x];
+    }
+  }
+  return 1;
+}
+
+void clearSelectedPhoto(uint16_t color = rgb565(5, 28, 22)) {
+  if (!selectedPhotoFrame) return;
+  selectedPhotoIndex = -1;
+  for (int i = 0; i < kPhotoW * kPhotoH; ++i) {
+    selectedPhotoFrame[i] = color;
+  }
+}
+
+bool downloadSelectedPhoto(const char* url) {
+  if (!url || !strlen(url) || !jpegBuffer || !selectedPhotoFrame || WiFi.status() != WL_CONNECTED) return false;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(5500);
+  if (!http.begin(client, url)) return false;
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+  WiFiClient* stream = http.getStreamPtr();
+  const int contentLength = http.getSize();
+  size_t total = 0;
+  const uint32_t started = millis();
+  while (total < jpegBufferSize && millis() - started < 7000) {
+    const size_t available = stream->available();
+    if (available == 0) {
+      if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
+      if (total > 0 && !stream->connected()) break;
+      vTaskDelay(pdMS_TO_TICKS(1));
+      continue;
+    }
+    const size_t chunk = min(available, jpegBufferSize - total);
+    const int read = stream->readBytes(jpegBuffer + total, chunk);
+    if (read <= 0) break;
+    total += read;
+    if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
+  }
+  http.end();
+  if (total < 128 || total >= jpegBufferSize) return false;
+
+  clearSelectedPhoto();
+  if (!jpeg.openRAM(jpegBuffer, static_cast<int>(total), jpegDrawPhoto)) {
+    return false;
+  }
+  const int jw = jpeg.getWidth();
+  const int jh = jpeg.getHeight();
+  int scale = 0;
+  if (jw > kPhotoW * 2 || jh > kPhotoH * 2) {
+    scale = JPEG_SCALE_QUARTER;
+  } else if (jw > kPhotoW || jh > kPhotoH) {
+    scale = JPEG_SCALE_HALF;
+  }
+  jpeg.setPixelType(RGB565_BIG_ENDIAN);
+  const int result = jpeg.decode(0, 0, scale);
+  jpeg.close();
+  return result == JPEG_SUCCESS;
+}
+
 void enrichPlane(int index) {
   if (!trafficLive || index < 0 || index >= livePlaneCount || livePlanes[index].enriched) return;
   LivePlane& p = livePlanes[index];
+  copyClean(p.photo, sizeof(p.photo), "", "INFO...");
 
   char url[128];
   JsonDocument doc;
@@ -1094,13 +1186,26 @@ void enrichPlane(int index) {
     if (httpsGetJson(url, doc)) {
       const char* photo = doc["response"]["aircraft"]["url_photo_thumbnail"] | nullptr;
       if (photo && strlen(photo)) {
-        copyClean(p.photo, sizeof(p.photo), "PHOTO OK", "PHOTO OK");
+        copyClean(p.photoUrl, sizeof(p.photoUrl), photo, "");
+        copyClean(p.photo, sizeof(p.photo), "PHOTO...", "PHOTO...");
+        if (downloadSelectedPhoto(p.photoUrl)) {
+          selectedPhotoIndex = index;
+          copyClean(p.photo, sizeof(p.photo), "PHOTO OK", "PHOTO OK");
+        } else {
+          copyClean(p.photo, sizeof(p.photo), "PHOTO KO", "PHOTO KO");
+        }
+      } else {
+        copyClean(p.photo, sizeof(p.photo), "SANS PHOTO", "SANS PHOTO");
       }
       const char* type = doc["response"]["aircraft"]["type"] | nullptr;
       if (type && strlen(type)) {
         copyClean(p.type, sizeof(p.type), type, p.type);
       }
+    } else {
+      copyClean(p.photo, sizeof(p.photo), "PHOTO KO", "PHOTO KO");
     }
+  } else {
+    copyClean(p.photo, sizeof(p.photo), "SANS PHOTO", "SANS PHOTO");
   }
 
   p.enriched = true;
@@ -1345,12 +1450,27 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
   blendRoundRect(286, 218, 106, 70, 12, rgb565(8, 32, 26), 222);
   drawRoundRect(286, 218, 106, 70, 12, rgb565(88, 220, 116));
-  drawTextCentered(339, 238, "PHOTO", green, 1);
-  drawTextCentered(339, 256, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
-  const int px = 338;
-  const int py = 274;
-  drawThickLine(px - 34, py, px + 34, py - 12, green);
-  drawThickLine(px - 4, py - 4, px + 20, py + 15, green);
+  const bool hasPhoto = trafficLive && selectedPhotoFrame && selectedPhotoIndex == selectedPlane &&
+                        !strcmp(livePlanes[selectedPlane].photo, "PHOTO OK");
+  if (hasPhoto) {
+    for (int py = 0; py < kPhotoH; ++py) {
+      for (int px = 0; px < kPhotoW; ++px) {
+        const int dx = px - kPhotoW / 2;
+        const int dy = py - kPhotoH / 2;
+        if (dx * dx / 4 + dy * dy <= 2100) {
+          putPixel(286 + px, 218 + py, selectedPhotoFrame[py * kPhotoW + px]);
+        }
+      }
+    }
+    blendRoundRect(286, 218, 106, 70, 12, rgb565(0, 30, 18), 54);
+  } else {
+    drawTextCentered(339, 238, "PHOTO", green, 1);
+    drawTextCentered(339, 256, trafficLive ? livePlanes[selectedPlane].photo : "SIM", text, 1);
+    const int px = 338;
+    const int py = 274;
+    drawThickLine(px - 34, py, px + 34, py - 12, green);
+    drawThickLine(px - 4, py - 4, px + 20, py + 15, green);
+  }
 
   blendRoundRect(336, 144, 34, 34, 13, rgb565(2, 24, 16), 226);
   drawRoundRect(336, 144, 34, 34, 13, green);
@@ -1723,6 +1843,19 @@ bool initDisplay() {
     Serial.println("[DISPLAY] Tile buffer PSRAM KO");
     return false;
   }
+  jpegBufferSize = 96 * 1024;
+  jpegBuffer = static_cast<uint8_t*>(heap_caps_malloc(jpegBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!jpegBuffer) {
+    Serial.println("[DISPLAY] JPEG buffer PSRAM KO");
+    return false;
+  }
+  selectedPhotoFrame = static_cast<uint16_t*>(heap_caps_malloc(kPhotoW * kPhotoH * sizeof(uint16_t),
+                                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!selectedPhotoFrame) {
+    Serial.println("[DISPLAY] Photo framebuffer PSRAM KO");
+    return false;
+  }
+  clearSelectedPhoto();
   clearMapFrame();
 
   initBacklight();
@@ -2120,7 +2253,8 @@ void handleTap(uint16_t x, uint16_t y) {
   const int plane = nearestPlaneAt(x, y);
   if (plane >= 0) {
     selectedPlane = plane;
-    enrichPlane(selectedPlane);
+    clearSelectedPhoto();
+    requestPlaneEnrich(selectedPlane);
   }
 }
 
@@ -2200,6 +2334,19 @@ void mapFetchTask(void*) {
   }
 }
 
+void enrichTask(void*) {
+  for (;;) {
+    const int request = enrichRequestedPlane;
+    if (request >= 0 && !enrichInProgress) {
+      enrichRequestedPlane = -1;
+      enrichInProgress = true;
+      enrichPlane(request);
+      enrichInProgress = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(80));
+  }
+}
+
 void startTrafficTask() {
   if (trafficTaskHandle != nullptr) return;
   xTaskCreatePinnedToCore(trafficFetchTask,
@@ -2222,6 +2369,17 @@ void startMapTask() {
                           0);
 }
 
+void startEnrichTask() {
+  if (enrichTaskHandle != nullptr) return;
+  xTaskCreatePinnedToCore(enrichTask,
+                          "flightdesk-enrich",
+                          14336,
+                          nullptr,
+                          1,
+                          &enrichTaskHandle,
+                          0);
+}
+
 void requestTrafficFetch() {
   if (trafficFetchInProgress || trafficFetchRequested) return;
   trafficFetchRequested = true;
@@ -2230,6 +2388,13 @@ void requestTrafficFetch() {
 void requestMapFetch() {
   if (mapFetchInProgress || mapFetchRequested) return;
   mapFetchRequested = true;
+}
+
+void requestPlaneEnrich(int index) {
+  if (!trafficLive || index < 0 || index >= livePlaneCount) return;
+  if (livePlanes[index].enriched) return;
+  copyClean(livePlanes[index].photo, sizeof(livePlanes[index].photo), "INFO...", "INFO...");
+  enrichRequestedPlane = index;
 }
 
 }  // namespace
@@ -2250,6 +2415,7 @@ void setup() {
   initOta();
   startTrafficTask();
   startMapTask();
+  startEnrichTask();
   bootMs = millis();
   printStatus();
 }
