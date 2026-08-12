@@ -104,6 +104,8 @@ volatile bool trafficFetchRequested = false;
 volatile bool trafficFetchInProgress = false;
 volatile bool trafficFrameDirty = false;
 TaskHandle_t trafficTaskHandle = nullptr;
+volatile bool mapFetchRequested = false;
+TaskHandle_t mapTaskHandle = nullptr;
 bool setupPortalActive = false;
 bool otaStarted = false;
 char storedSsid[33] = "";
@@ -2188,6 +2190,16 @@ void trafficFetchTask(void*) {
   }
 }
 
+void mapFetchTask(void*) {
+  for (;;) {
+    if (mapFetchRequested && !mapFetchInProgress) {
+      mapFetchRequested = false;
+      fetchMapTiles();
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
 void startTrafficTask() {
   if (trafficTaskHandle != nullptr) return;
   xTaskCreatePinnedToCore(trafficFetchTask,
@@ -2199,9 +2211,25 @@ void startTrafficTask() {
                           0);
 }
 
+void startMapTask() {
+  if (mapTaskHandle != nullptr) return;
+  xTaskCreatePinnedToCore(mapFetchTask,
+                          "flightdesk-map",
+                          12288,
+                          nullptr,
+                          1,
+                          &mapTaskHandle,
+                          0);
+}
+
 void requestTrafficFetch() {
   if (trafficFetchInProgress || trafficFetchRequested) return;
   trafficFetchRequested = true;
+}
+
+void requestMapFetch() {
+  if (mapFetchInProgress || mapFetchRequested) return;
+  mapFetchRequested = true;
 }
 
 }  // namespace
@@ -2221,6 +2249,7 @@ void setup() {
   connectWifi();
   initOta();
   startTrafficTask();
+  startMapTask();
   bootMs = millis();
   printStatus();
 }
@@ -2246,7 +2275,7 @@ void loop() {
     Serial.printf("[WIFI] Reconnexion avec SSID stocke: %s\n", activeWifiSsid());
   }
 
-  if (now - lastStatusMs >= 5000) {
+  if (now - lastStatusMs >= 15000) {
     lastStatusMs = now;
     printStatus();
   }
@@ -2255,8 +2284,7 @@ void loop() {
       (mapReloadAfterMs == 0 || now >= mapReloadAfterMs) &&
       (lastMapFetchMs == 0 || mapDirty || now - lastMapFetchMs >= 60000)) {
     lastMapFetchMs = now;
-    fetchMapTiles();
-    drawRadarFrame();
+    requestMapFetch();
   }
 
   if (WiFi.status() == WL_CONNECTED && now - bootMs >= 3000 &&
@@ -2274,11 +2302,6 @@ void loop() {
     trafficFrameDirty = false;
   }
 
-  if (now - lastI2cScanMs >= 30000) {
-    lastI2cScanMs = now;
-    scanI2c();
-  }
-
   if (now - lastTouchPollMs >= 30) {
     lastTouchPollMs = now;
     pollTouch();
@@ -2289,8 +2312,8 @@ void loop() {
     pollImu();
   }
 
-  if (now - lastRadarMs >= 20) {
-    const uint32_t elapsedMs = lastRadarMs == 0 ? 20 : now - lastRadarMs;
+  if (now - lastRadarMs >= 16) {
+    const uint32_t elapsedMs = lastRadarMs == 0 ? 16 : now - lastRadarMs;
     lastRadarMs = now;
     sweepDeg += min<uint32_t>(elapsedMs, 80) * 0.115f;
     if (sweepDeg >= 360.0f) {
