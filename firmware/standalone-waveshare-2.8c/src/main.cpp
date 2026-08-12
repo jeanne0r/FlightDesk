@@ -63,6 +63,7 @@ esp_lcd_panel_handle_t lcdPanel = nullptr;
 uint16_t* frame = nullptr;
 uint16_t* mapFrame = nullptr;
 uint16_t* radarBaseFrame = nullptr;
+uint8_t* radarAngleBins = nullptr;
 uint8_t* tileBuffer = nullptr;
 size_t tileBufferSize = 0;
 PNG png;
@@ -121,6 +122,8 @@ constexpr int kRangeKm = 50;
 constexpr int kRadarCx = 240;
 constexpr int kRadarCy = 240;
 constexpr int kRadarRadius = 234;
+constexpr int kSweepBins = 240;
+constexpr int kSweepTrailBins = 43;
 int pngTileScreenX = 0;
 int pngTileScreenY = 0;
 double radarLat = kHomeLat;
@@ -1392,14 +1395,40 @@ void fillWedge(int cx, int cy, int radius, float startDeg, float endDeg, uint16_
   }
 }
 
-float clockwiseLagDeg(float pixelDeg, float headDeg) {
-  float lag = fmodf(headDeg - pixelDeg + 360.0f, 360.0f);
-  if (lag < 0.0f) lag += 360.0f;
-  return lag;
+uint8_t angleToBin(float angleDeg) {
+  while (angleDeg < 0.0f) angleDeg += 360.0f;
+  while (angleDeg >= 360.0f) angleDeg -= 360.0f;
+  int bin = static_cast<int>(angleDeg * (static_cast<float>(kSweepBins) / 360.0f) + 0.5f);
+  if (bin >= kSweepBins) bin -= kSweepBins;
+  return static_cast<uint8_t>(bin);
+}
+
+void buildRadarAngleBins() {
+  if (!radarAngleBins) return;
+  constexpr int cx = kRadarCx;
+  constexpr int cy = kRadarCy;
+  constexpr int r = kRadarRadius;
+  const int rr = (r - 14) * (r - 14);
+  const int inner = 15 * 15;
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) {
+      const int dx = x - cx;
+      const int dy = y - cy;
+      const int d2 = dx * dx + dy * dy;
+      uint8_t bin = 0xFF;
+      if (d2 <= rr && d2 >= inner) {
+        float a = atan2f(static_cast<float>(dy), static_cast<float>(dx)) / DEG_TO_RAD;
+        if (a < 0.0f) a += 360.0f;
+        bin = angleToBin(a);
+      }
+      radarAngleBins[y * kWidth + x] = bin;
+    }
+  }
 }
 
 void blendRadarSweep(int cx, int cy, int radius, float angleDeg, uint16_t color) {
-  constexpr float kTrailDeg = 64.0f;
+  if (!radarAngleBins) return;
+  const uint8_t headBin = angleToBin(angleDeg);
   const int rr = radius * radius;
   const int inner = 15 * 15;
   for (int y = cy - radius; y <= cy + radius; y += 2) {
@@ -1408,12 +1437,12 @@ void blendRadarSweep(int cx, int cy, int radius, float angleDeg, uint16_t color)
       const int dy = y - cy;
       const int d2 = dx * dx + dy * dy;
       if (d2 > rr || d2 < inner) continue;
-      float a = atan2f(static_cast<float>(dy), static_cast<float>(dx)) / DEG_TO_RAD;
-      if (a < 0.0f) a += 360.0f;
-      const float lag = clockwiseLagDeg(a, angleDeg);
-      if (lag > kTrailDeg) continue;
+      const uint8_t pixelBin = radarAngleBins[y * kWidth + x];
+      if (pixelBin == 0xFF) continue;
+      const uint8_t lag = static_cast<uint8_t>((headBin + kSweepBins - pixelBin) % kSweepBins);
+      if (lag > kSweepTrailBins) continue;
 
-      const float angular = 1.0f - lag / kTrailDeg;
+      const float angular = 1.0f - static_cast<float>(lag) / static_cast<float>(kSweepTrailBins);
       const float radial = 0.35f + 0.65f * (static_cast<float>(d2) / rr);
       const uint8_t alpha = static_cast<uint8_t>(6 + 48.0f * angular * angular * radial);
       blendPixel(x, y, color, alpha);
@@ -1679,6 +1708,13 @@ bool initDisplay() {
     Serial.println("[DISPLAY] Radar base framebuffer PSRAM KO");
     return false;
   }
+  radarAngleBins = static_cast<uint8_t*>(heap_caps_malloc(kWidth * kHeight,
+                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!radarAngleBins) {
+    Serial.println("[DISPLAY] Radar angle LUT PSRAM KO");
+    return false;
+  }
+  buildRadarAngleBins();
   tileBufferSize = 220 * 1024;
   tileBuffer = static_cast<uint8_t*>(heap_caps_malloc(tileBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!tileBuffer) {
@@ -2253,8 +2289,8 @@ void loop() {
     pollImu();
   }
 
-  if (now - lastRadarMs >= 28) {
-    const uint32_t elapsedMs = lastRadarMs == 0 ? 28 : now - lastRadarMs;
+  if (now - lastRadarMs >= 20) {
+    const uint32_t elapsedMs = lastRadarMs == 0 ? 20 : now - lastRadarMs;
     lastRadarMs = now;
     sweepDeg += min<uint32_t>(elapsedMs, 80) * 0.115f;
     if (sweepDeg >= 360.0f) {
@@ -2262,6 +2298,5 @@ void loop() {
     }
     drawRadarFrame();
   }
-
-  delay(2);
+  yield();
 }
