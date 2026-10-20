@@ -80,6 +80,10 @@ WebServer statusServer(8081);
 char lastDetailStatus[72] = "aucune requete";
 int lastPhotoHttpCode = 0;
 char lastPhotoStatus[72] = "aucune photo";
+int photoCropX = 0;
+int photoCropY = 0;
+int photoCropW = 0;
+int photoCropH = 0;
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
@@ -1098,7 +1102,10 @@ void fetchTraffic() {
     p.lon = lon;
     if (!updateLivePlanePosition(p)) continue;
     const double bearing = bearingDeg(radarLat, radarLon, lat, lon);
-    p.heading = static_cast<int>(round(ac["track"] | ac["true_heading"] | bearing)) - 90;
+    const double heading = !ac["track"].isNull() ? ac["track"].as<double>()
+                            : !ac["true_heading"].isNull() ? ac["true_heading"].as<double>()
+                            : bearing;
+    p.heading = static_cast<int>(round(heading)) - 90;
     copyClean(p.hex, sizeof(p.hex), ac["hex"] | "", "");
     copyClean(p.callsign, sizeof(p.callsign), ac["flight"] | ac["r"] | ac["hex"] | "", "VOL");
     copyClean(p.type, sizeof(p.type), ac["t"] | ac["desc"] | "", "TYPE INCONNU");
@@ -1107,8 +1114,10 @@ void fetchTraffic() {
     formatRoute(p.route, sizeof(p.route), ac["route"] | "");
     copyClean(p.photo, sizeof(p.photo), "", "INFO...");
     p.photoUrl[0] = '\0';
-    p.altitudeM = static_cast<int>(round((ac["alt_baro"] | ac["alt_geom"] | 0) * 0.3048));
-    p.speedKmh = static_cast<int>(round((ac["gs"] | 0) * 1.852));
+    const double altitudeFt = !ac["alt_baro"].isNull() ? ac["alt_baro"].as<double>()
+                               : ac["alt_geom"].as<double>();
+    p.altitudeM = static_cast<int>(round(altitudeFt * 0.3048));
+    p.speedKmh = ac["gs"].isNull() ? -1 : static_cast<int>(round(ac["gs"].as<double>() * 1.852));
     p.enriched = false;
     ++count;
   }
@@ -1181,15 +1190,15 @@ bool httpsGetJson(const char* url, JsonDocument& doc) {
 }
 
 int jpegDrawPhoto(JPEGDRAW* draw) {
-  if (!selectedPhotoFrame) return 0;
-  const int dstX = draw->x;
-  const int dstY = draw->y;
+  if (!selectedPhotoFrame || !photoCropW || !photoCropH) return 0;
   for (int y = 0; y < draw->iHeight; ++y) {
-    const int py = dstY + y;
-    if (py < 0 || py >= kPhotoH) continue;
+    const int sourceY = draw->y + y;
+    if (sourceY < photoCropY || sourceY >= photoCropY + photoCropH) continue;
+    const int py = (sourceY - photoCropY) * kPhotoH / photoCropH;
     for (int x = 0; x < draw->iWidth; ++x) {
-      const int px = dstX + x;
-      if (px < 0 || px >= kPhotoW) continue;
+      const int sourceX = draw->x + x;
+      if (sourceX < photoCropX || sourceX >= photoCropX + photoCropW) continue;
+      const int px = (sourceX - photoCropX) * kPhotoW / photoCropW;
       selectedPhotoFrame[py * kPhotoW + px] = draw->pPixels[y * draw->iWidth + x];
     }
   }
@@ -1261,14 +1270,16 @@ bool downloadSelectedPhoto(const char* url) {
   }
   const int jw = jpeg.getWidth();
   const int jh = jpeg.getHeight();
-  int scale = 0;
-  if (jw > kPhotoW * 2 || jh > kPhotoH * 2) {
-    scale = JPEG_SCALE_QUARTER;
-  } else if (jw > kPhotoW || jh > kPhotoH) {
-    scale = JPEG_SCALE_HALF;
+  photoCropW = jw;
+  photoCropH = static_cast<int>(round(static_cast<double>(jw) * kPhotoH / kPhotoW));
+  if (photoCropH > jh) {
+    photoCropH = jh;
+    photoCropW = static_cast<int>(round(static_cast<double>(jh) * kPhotoW / kPhotoH));
   }
-  jpeg.setPixelType(RGB565_BIG_ENDIAN);
-  const int result = jpeg.decode(0, 0, scale);
+  photoCropX = (jw - photoCropW) / 2;
+  photoCropY = (jh - photoCropH) / 2;
+  jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+  const int result = jpeg.decode(0, 0, 0);
   snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG %dx%d octets=%u decode=%d", jw, jh, total, result);
   jpeg.close();
   // JPEGDEC::decode() returns 1 on success; JPEG_SUCCESS is a separate error code (0).
@@ -1614,7 +1625,11 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
   drawText(82, 233, line, text, 1);
   snprintf(line, sizeof(line), "%.27s", planeRoute(selectedPlane));
   drawText(82, 252, line, text, 1);
-  snprintf(line, sizeof(line), "%dKM  %dKMH", planeDistanceKm(selectedPlane), planeSpeedKmh(selectedPlane));
+  if (planeSpeedKmh(selectedPlane) >= 0) {
+    snprintf(line, sizeof(line), "%dKM  %dKM/H", planeDistanceKm(selectedPlane), planeSpeedKmh(selectedPlane));
+  } else {
+    snprintf(line, sizeof(line), "%dKM  -- KM/H", planeDistanceKm(selectedPlane));
+  }
   drawText(82, 280, line, text, 1);
   snprintf(line, sizeof(line), "%dM  %dDEG", planeAltitudeM(selectedPlane), planeHeading(selectedPlane) + 90);
   drawText(82, 303, line, text, 1);
