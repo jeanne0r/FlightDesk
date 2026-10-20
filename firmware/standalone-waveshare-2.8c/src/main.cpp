@@ -1810,8 +1810,7 @@ void buildRadarBaseFrame() {
       if (d2 > kMapRadius * kMapRadius) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < r * r ? 11 : 19;
-        frame[y * kWidth + x] = rgb565(2, shade, 5);
+        frame[y * kWidth + x] = rgb565(2, 11, 5);
       }
     }
   }
@@ -1827,12 +1826,12 @@ void buildRadarBaseFrame() {
         const int d2 = dx * dx + dy * dy;
         if (d2 <= (kMapRadius - 2) * (kMapRadius - 2)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], d2 <= r * r ? 156 : 224);
+          frame[index] = blend565(frame[index], mapFrame[index], 156);
         }
       }
     }
   }
-  blendFillCircle(cx, cy, r, rgb565(1, 5, 2), nightMode ? 115 : 72);
+  blendFillCircle(cx, cy, kMapRadius - 2, rgb565(1, 5, 2), nightMode ? 115 : 72);
   blendFillCircle(cx, cy, r / 2, rgb565(24, 112, 43), 6);
 
   blendCircle(cx, cy, kMapRadius - 1, softGreen, 46);
