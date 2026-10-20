@@ -13,6 +13,11 @@ de sélectionner un avion, ouvrir les pages, choisir un code postal parmi les
 présélections, régler le rayon (20/50/100/250 km), basculer le mode nuit et
 recentrer la carte. Le rayon et le mode nuit sont enregistrés en NVS.
 
+La fiche avion tente d'ajouter itinéraire, compagnie, immatriculation, type et
+miniature depuis ADSBdb. Ces informations sont conservées lors des mises à
+jour du trafic et la sélection suit l'identifiant ICAO plutôt que la position
+de l'avion dans la liste. Toutes les fiches n'ont pas nécessairement de photo.
+
 Les tuiles OpenStreetMap et les données ADS-B sont téléchargées directement
 par l'ESP32 quand le Wi-Fi est disponible. Une carte embarquée et des avions
 de démonstration servent de repli. Les pages Recherche et Assistant restent
@@ -33,3 +38,7 @@ pio device monitor
 Le portail Wi-Fi local `FlightDesk-Setup` permet aussi de configurer le réseau
 sur l'appareil. L'environnement `waveshare_2_8c_ota` peut ensuite servir aux
 mises à jour OTA lorsque l'appareil est joignable sur le réseau local.
+
+Pour contrôler un appareil sur le LAN sans exposer les identifiants Wi-Fi :
+`http://<ip-de-l-ecran>:8081/status` renvoie l'état de l'écran, du trafic et
+de la fiche sélectionnée.
