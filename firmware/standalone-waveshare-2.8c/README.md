@@ -18,7 +18,9 @@ l'immatriculation, le type et une miniature. Elle interroge ADSBdb, HexDB pour
 les appareils absents d'ADSBdb et Planespotters pour les photos. Certaines
 routes ne sont pas publiées et certains appareils n'ont pas de photo. Les
 informations trouvées sont conservées lors des mises à jour du trafic et la
-sélection suit l'identifiant ICAO plutôt que la position dans la liste.
+sélection suit l'identifiant ICAO plutôt que la position dans la liste. Les
+photos JPEG classiques et progressives sont décodées localement, redimensionnées
+pour le cadre de la fiche et associées à l'identifiant de l'avion sélectionné.
 
 L'ESP32 récupère le trafic directement sur Internet via adsb.fi, adsb.lol puis
 airplanes.live. Il ne dépend d'aucun serveur sur le réseau local. Les tuiles

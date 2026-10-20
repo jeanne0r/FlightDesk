@@ -2,7 +2,6 @@
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <JPEGDEC.h>
 #include <PNGdec.h>
 #include <Preferences.h>
 #include <WebServer.h>
@@ -21,6 +20,7 @@
 #include "secrets.example.h"
 #endif
 #include "embedded_map.h"
+#include "photo_decode.h"
 #include "ui_font.h"
 
 namespace {
@@ -71,19 +71,14 @@ size_t tileBufferSize = 0;
 uint8_t* jpegBuffer = nullptr;
 size_t jpegBufferSize = 0;
 uint16_t* selectedPhotoFrame = nullptr;
-int selectedPhotoIndex = -1;
+char selectedPhotoHex[8] = "";
 PNG png;
-JPEGDEC jpeg;
 Preferences prefs;
 WebServer setupServer(80);
 WebServer statusServer(8081);
 char lastDetailStatus[72] = "aucune requete";
 int lastPhotoHttpCode = 0;
-char lastPhotoStatus[72] = "aucune photo";
-int photoCropX = 0;
-int photoCropY = 0;
-int photoCropW = 0;
-int photoCropH = 0;
+char lastPhotoStatus[120] = "aucune photo";
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
@@ -1141,7 +1136,6 @@ void fetchTraffic() {
     }
   }
 
-  const bool photoWasSelected = selectedPlane >= 0 && selectedPhotoIndex == selectedPlane;
   for (int i = 0; i < count; ++i) {
     livePlanes[i] = fetchedPlanes[i];
   }
@@ -1155,7 +1149,6 @@ void fetchTraffic() {
         break;
       }
     }
-    selectedPhotoIndex = photoWasSelected ? selectedPlane : -1;
   }
   trafficFrameDirty = true;
   Serial.printf("[TRAFFIC] %d avion(s) live via %s\n", livePlaneCount, provider);
@@ -1189,25 +1182,9 @@ bool httpsGetJson(const char* url, JsonDocument& doc) {
   return !error;
 }
 
-int jpegDrawPhoto(JPEGDRAW* draw) {
-  if (!selectedPhotoFrame || !photoCropW || !photoCropH) return 0;
-  for (int y = 0; y < draw->iHeight; ++y) {
-    const int sourceY = draw->y + y;
-    if (sourceY < photoCropY || sourceY >= photoCropY + photoCropH) continue;
-    const int py = (sourceY - photoCropY) * kPhotoH / photoCropH;
-    for (int x = 0; x < draw->iWidth; ++x) {
-      const int sourceX = draw->x + x;
-      if (sourceX < photoCropX || sourceX >= photoCropX + photoCropW) continue;
-      const int px = (sourceX - photoCropX) * kPhotoW / photoCropW;
-      selectedPhotoFrame[py * kPhotoW + px] = draw->pPixels[y * draw->iWidth + x];
-    }
-  }
-  return 1;
-}
-
 void clearSelectedPhoto(uint16_t color = rgb565(5, 28, 22)) {
   if (!selectedPhotoFrame) return;
-  selectedPhotoIndex = -1;
+  selectedPhotoHex[0] = '\0';
   for (int i = 0; i < kPhotoW * kPhotoH; ++i) {
     selectedPhotoFrame[i] = color;
   }
@@ -1264,26 +1241,18 @@ bool downloadSelectedPhoto(const char* url) {
   }
 
   clearSelectedPhoto();
-  if (!jpeg.openRAM(jpegBuffer, static_cast<int>(total), jpegDrawPhoto)) {
-    snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG open KO octets=%u", total);
-    return false;
+  int sourceWidth = 0;
+  int sourceHeight = 0;
+  const bool decoded = decodePhotoJpeg(jpegBuffer, total, selectedPhotoFrame,
+                                       kPhotoW, kPhotoH, &sourceWidth, &sourceHeight);
+  if (decoded) {
+    snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG %dx%d rendu %dx%d",
+             sourceWidth, sourceHeight, kPhotoW, kPhotoH);
+  } else {
+    snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG KO: %.70s",
+             photoDecodeError() ? photoDecodeError() : "inconnu");
   }
-  const int jw = jpeg.getWidth();
-  const int jh = jpeg.getHeight();
-  photoCropW = jw;
-  photoCropH = static_cast<int>(round(static_cast<double>(jw) * kPhotoH / kPhotoW));
-  if (photoCropH > jh) {
-    photoCropH = jh;
-    photoCropW = static_cast<int>(round(static_cast<double>(jh) * kPhotoW / kPhotoH));
-  }
-  photoCropX = (jw - photoCropW) / 2;
-  photoCropY = (jh - photoCropH) / 2;
-  jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
-  const int result = jpeg.decode(0, 0, 0);
-  snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG %dx%d octets=%u decode=%d", jw, jh, total, result);
-  jpeg.close();
-  // JPEGDEC::decode() returns 1 on success; JPEG_SUCCESS is a separate error code (0).
-  return result == 1;
+  return decoded;
 }
 
 void enrichPlane(int index) {
@@ -1371,7 +1340,7 @@ void enrichPlane(int index) {
     copyClean(target.photo, sizeof(target.photo), p.photo, "");
     target.enriched = true;
     if (photoReady && selectedHex[0] && strcmp(selectedHex, p.hex) == 0) {
-      selectedPhotoIndex = current;
+      copyClean(selectedPhotoHex, sizeof(selectedPhotoHex), p.hex, "");
     }
     Serial.printf("[DETAIL] %s route=%s photo=%s\n", p.callsign, p.route, p.photo);
     break;
@@ -1636,7 +1605,8 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 
   blendRoundRect(286, 218, 106, 70, 12, rgb565(8, 32, 26), 222);
   drawRoundRect(286, 218, 106, 70, 12, rgb565(88, 220, 116));
-  const bool hasPhoto = trafficLive && selectedPhotoFrame && selectedPhotoIndex == selectedPlane &&
+  const bool hasPhoto = trafficLive && selectedPhotoFrame && selectedHex[0] &&
+                        !strcmp(selectedPhotoHex, selectedHex) &&
                         !strcmp(livePlanes[selectedPlane].photo, "PHOTO OK");
   if (hasPhoto) {
     for (int py = 0; py < kPhotoH; ++py) {
@@ -2201,6 +2171,8 @@ void handleStatus() {
     doc["selected"]["registration"] = p.registration;
     doc["selected"]["route"] = p.route;
     doc["selected"]["photo"] = p.photo;
+    doc["selected"]["photo_visible"] = selectedPhotoHex[0] && !strcmp(selectedPhotoHex, p.hex) &&
+                                           !strcmp(p.photo, "PHOTO OK");
     doc["selected"]["enriched"] = p.enriched;
   }
   String body;
@@ -2508,7 +2480,7 @@ void handleTap(uint16_t x, uint16_t y) {
   if (plane >= 0) {
     selectedPlane = plane;
     copyClean(selectedHex, sizeof(selectedHex), trafficLive ? livePlanes[plane].hex : "", "");
-    clearSelectedPhoto();
+    if (strcmp(selectedPhotoHex, selectedHex) != 0) clearSelectedPhoto();
     requestPlaneEnrich(selectedPlane);
   }
 }
@@ -2647,7 +2619,13 @@ void requestMapFetch() {
 
 void requestPlaneEnrich(int index) {
   if (!trafficLive || index < 0 || index >= livePlaneCount) return;
-  if (livePlanes[index].enriched) return;
+  if (livePlanes[index].enriched) {
+    const bool photoMissing = !strcmp(livePlanes[index].photo, "PHOTO KO") ||
+                              (!strcmp(livePlanes[index].photo, "PHOTO OK") &&
+                               strcmp(selectedPhotoHex, livePlanes[index].hex) != 0);
+    if (!photoMissing) return;
+    livePlanes[index].enriched = false;
+  }
   copyClean(livePlanes[index].photo, sizeof(livePlanes[index].photo), "INFO...", "INFO...");
   enrichRequestedPlane = index;
 }
