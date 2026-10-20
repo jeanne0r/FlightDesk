@@ -29,9 +29,9 @@ Pendant un glissement, la carte suit le doigt ; les avions sont repositionnés
 au relâchement, puis le trafic est actualisé. Le trafic accepte jusqu'à 512 avions
 dans le rayon choisi et conserve les dernières données lors d'une panne temporaire
 de l'API. Une carte embarquée sert de repli ; les avions de démonstration ne
-s'affichent que sans Wi-Fi. Les pages Recherche et Assistant restent
-des maquettes fonctionnelles limitées : saisie texte et audio ne sont pas
-encore portés. Le rendu doit encore être ajusté sur un écran physique.
+s'affichent que sans Wi-Fi. La barre du radar contient HOME, REGL et IA ;
+HOME recentre la carte. La page Assistant reste une maquette limitée :
+la saisie texte et audio n'est pas encore portée.
 
 ## Compilation et flash
 

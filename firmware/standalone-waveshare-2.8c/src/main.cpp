@@ -231,8 +231,6 @@ int livePlaneCount = 0;
 
 enum class AppView : uint8_t {
   Radar,
-  Search,
-  Favorites,
   Settings,
   Assistant
 };
@@ -1635,20 +1633,9 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
     return;
   }
 
-  if (appView == AppView::Search) {
-    drawTextCentered(240, 122, "RECHERCHE", green, 2);
-    drawText(112, 170, "Touchez un avion", text, 2);
-    drawText(112, 200, "pour afficher le vol.", text, 2);
-    drawText(112, 246, "Recherche texte a venir", green, 1);
-  } else if (appView == AppView::Favorites) {
-    drawTextCentered(240, 122, "FAVORIS", green, 2);
-    drawText(112, 170, "Aucun favori local", text, 2);
-    drawText(112, 206, "Etoile dans popup.", green, 1);
-  } else {
-    drawTextCentered(240, 122, "ASSISTANT IA", green, 2);
-    drawText(112, 168, "Version simple", text, 2);
-    drawText(112, 198, "sans audio ici.", text, 2);
-  }
+  drawTextCentered(240, 122, "ASSISTANT IA", green, 2);
+  drawText(112, 168, "Version simple", text, 2);
+  drawText(112, 198, "sans audio ici.", text, 2);
   blendRoundRect(144, 304, 192, 42, 14, rgb565(1, 15, 12), 232);
   drawRoundRect(144, 304, 192, 42, 14, rgb565(70, 220, 104));
   drawTextCentered(240, 317, "FERMER", text, 2);
@@ -1707,13 +1694,13 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 }
 
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
-  const char* labels[] = {"RADAR", "RECH", "FAV", "REGL", "IA"};
-  constexpr int width = 50;
+  const char* labels[] = {"HOME", "REGL", "IA"};
+  constexpr int width = 86;
   constexpr int height = 32;
   constexpr int gap = 6;
   constexpr int startX = 101;
   constexpr int y = 356;
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < 3; ++i) {
     const int x = startX + i * (width + gap);
     const bool active = static_cast<int>(appView) == i;
     blendRoundRect(x, y, width, height, 12, active ? rgb565(4, 28, 18) : rgb565(1, 10, 10), active ? 232 : 210);
@@ -1947,16 +1934,6 @@ void drawRadarFrame() {
   fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
   drawCircle(cx, cy, 16, dim);
-
-  if (appView == AppView::Radar && selectedPlane < 0) {
-    fillRoundRect(72, 88, 34, 34, 11, panel);
-    drawRoundRect(72, 88, 34, 34, 11, dim);
-    drawLine(80, 104, 89, 96, green);
-    drawLine(89, 96, 98, 104, green);
-    drawLine(83, 102, 83, 112, green);
-    drawLine(83, 112, 95, 112, green);
-    drawLine(95, 112, 95, 102, green);
-  }
 
   if (appView != AppView::Radar) {
     drawMenuPanel(green, text, panel);
@@ -2567,19 +2544,11 @@ void handleTap(uint16_t x, uint16_t y) {
     return;
   }
 
-  if (inRect(x, y, 68, 84, 42, 42)) {
-    recenterMap();
-    return;
-  }
-
   if (inRect(x, y, 93, 344, 314, 58)) {
-    if (x < 157) {
+    if (x < 191) {
       appView = AppView::Radar;
-    } else if (x < 213) {
-      appView = AppView::Search;
-    } else if (x < 269) {
-      appView = AppView::Favorites;
-    } else if (x < 325) {
+      recenterMap();
+    } else if (x < 283) {
       appView = AppView::Settings;
     } else {
       appView = AppView::Assistant;
