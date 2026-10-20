@@ -241,6 +241,9 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/aircraft":
             self.handle_aircraft(parsed)
             return
+        if parsed.path == "/api/esp32/photo.jpg":
+            self.handle_esp32_photo(parsed)
+            return
         if parsed.path == "/api/ai":
             self.handle_ai(parsed)
             return
@@ -328,6 +331,27 @@ class FlightDeskHandler(SimpleHTTPRequestHandler):
             payload = {"error": str(error), "photo": None, "type": None}
             payload.update(self.route_for_callsign(callsign))
             self.write_json(payload)
+
+    def handle_esp32_photo(self, parsed):
+        query = parse_qs(parsed.query)
+        hex_code = ((query.get("hex") or [""])[0] or "").lower().strip()
+        callsign = re.sub(r"[^A-Za-z0-9]", "", ((query.get("callsign") or [""])[0] or "").upper())
+        if not re.fullmatch(r"[0-9a-f]{6}", hex_code):
+            self.send_error(400, "invalid aircraft hex")
+            return
+        details = lookup_aircraft_details_for_png({"hex": hex_code, "callsign": callsign})
+        thumbnail = fetch_photo_thumb(details.get("photo"), 106, 70)
+        if thumbnail is None:
+            self.send_error(404, "photo unavailable")
+            return
+        output = BytesIO()
+        thumbnail.convert("RGB").save(output, format="JPEG", quality=85)
+        body = output.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def handle_ai(self, parsed):
         query = parse_qs(parsed.query)

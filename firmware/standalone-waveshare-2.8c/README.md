@@ -13,13 +13,18 @@ de sélectionner un avion, ouvrir les pages, choisir un code postal parmi les
 présélections, régler le rayon (20/50/100/250 km), basculer le mode nuit et
 recentrer la carte. Le rayon et le mode nuit sont enregistrés en NVS.
 
-La fiche avion tente d'ajouter itinéraire, compagnie, immatriculation, type et
-miniature depuis ADSBdb. Ces informations sont conservées lors des mises à
-jour du trafic et la sélection suit l'identifiant ICAO plutôt que la position
-de l'avion dans la liste. Toutes les fiches n'ont pas nécessairement de photo.
+La fiche avion récupère l'itinéraire, l'immatriculation, le type et une
+miniature par le serveur du simulateur (`/api/aircraft` et
+`/api/esp32/photo.jpg`). ADSBdb reste un repli si le serveur local est
+indisponible. Ces informations sont conservées lors des mises à jour du trafic
+et la sélection suit l'identifiant ICAO plutôt que la position de l'avion dans
+la liste. Toutes les fiches n'ont pas nécessairement de photo.
 
-Les tuiles OpenStreetMap et les données ADS-B sont téléchargées directement
-par l'ESP32 quand le Wi-Fi est disponible. Une carte embarquée et des avions
+L'ESP32 utilise le flux OpenSky du simulateur local pour retrouver les mêmes
+avions que le web. Il tente ensuite les fournisseurs ADS-B directs. L'adresse
+du simulateur est définie par `FLIGHTDESK_SIMULATOR_BASE_URL` dans les
+options de compilation (par défaut `http://192.168.1.16:4173`). Les tuiles
+OpenStreetMap sont téléchargées par l'ESP32. Une carte embarquée et des avions
 de démonstration servent de repli. Les pages Recherche et Assistant restent
 des maquettes fonctionnelles limitées : saisie texte et audio ne sont pas
 encore portés. Le rendu doit encore être ajusté sur un écran physique.

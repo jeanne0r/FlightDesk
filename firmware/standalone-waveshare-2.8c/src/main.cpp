@@ -23,6 +23,10 @@
 #include "embedded_map.h"
 #include "ui_font.h"
 
+#ifndef FLIGHTDESK_SIMULATOR_BASE_URL
+#define FLIGHTDESK_SIMULATOR_BASE_URL "http://192.168.1.16:4173"
+#endif
+
 namespace {
 
 constexpr const char* kBuildName = "FlightDesk Waveshare 2.8C web UI port";
@@ -1041,6 +1045,25 @@ bool fetchTrafficPayload(const char* provider, const char* url, String& payload)
   return true;
 }
 
+bool fetchSimulatorTraffic(String& payload) {
+  char url[192];
+  snprintf(url, sizeof(url), "%s/api/traffic?lat=%.5f&lon=%.5f&range=%d",
+           FLIGHTDESK_SIMULATOR_BASE_URL, radarLat, radarLon, radarRangeKm);
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(3500);
+  if (!http.begin(client, url)) return false;
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[TRAFFIC] Simulateur HTTP code=%d\n", code);
+    http.end();
+    return false;
+  }
+  payload = http.getString();
+  http.end();
+  return true;
+}
+
 void fetchTraffic() {
   if (WiFi.status() != WL_CONNECTED) {
     trafficLive = false;
@@ -1057,7 +1080,11 @@ void fetchTraffic() {
 
   String payload;
   const char* provider = nullptr;
-  if (fetchTrafficPayload("airplanes.live", url[0], payload)) {
+  bool simulatorFeed = false;
+  if (fetchSimulatorTraffic(payload)) {
+    provider = "simulateur OpenSky";
+    simulatorFeed = true;
+  } else if (fetchTrafficPayload("airplanes.live", url[0], payload)) {
     provider = "airplanes.live";
   } else if (fetchTrafficPayload("adsb.fi", url[1], payload)) {
     provider = "adsb.fi";
@@ -1080,6 +1107,29 @@ void fetchTraffic() {
   if (aircraft.isNull()) aircraft = doc["aircraft"].as<JsonArray>();
   static LivePlane fetchedPlanes[kMaxLivePlanes];
   int count = 0;
+  if (simulatorFeed) {
+    for (JsonArray state : doc["states"].as<JsonArray>()) {
+      if (count >= kMaxLivePlanes) break;
+      if (state.size() < 11 || state[5].isNull() || state[6].isNull()) continue;
+      LivePlane& p = fetchedPlanes[count];
+      p.lon = state[5].as<double>();
+      p.lat = state[6].as<double>();
+      if (!updateLivePlanePosition(p)) continue;
+      copyClean(p.hex, sizeof(p.hex), state[0] | "", "");
+      copyClean(p.callsign, sizeof(p.callsign), state[1] | "", "VOL");
+      copyClean(p.type, sizeof(p.type), "TYPE INCONNU", "TYPE INCONNU");
+      p.registration[0] = '\0';
+      p.airline[0] = '\0';
+      formatRoute(p.route, sizeof(p.route), "");
+      copyClean(p.photo, sizeof(p.photo), "INFO...", "INFO...");
+      p.photoUrl[0] = '\0';
+      p.heading = static_cast<int>(round(state[10] | 0.0)) - 90;
+      p.altitudeM = static_cast<int>(round(state[7].isNull() ? (state[13] | 0.0) : state[7].as<double>()));
+      p.speedKmh = static_cast<int>(round((state[9] | 0.0) * 3.6));
+      p.enriched = false;
+      ++count;
+    }
+  }
   for (JsonObject ac : aircraft) {
     if (count >= kMaxLivePlanes) break;
     if (!ac["lat"].is<double>() || !ac["lon"].is<double>()) continue;
@@ -1189,8 +1239,12 @@ void clearSelectedPhoto(uint16_t color = rgb565(5, 28, 22)) {
 
 bool downloadSelectedPhoto(const char* url) {
   if (!url || !strlen(url) || !jpegBuffer || !selectedPhotoFrame || WiFi.status() != WL_CONNECTED) return false;
-  WiFiClientSecure client;
-  client.setInsecure();
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  secureClient.setInsecure();
+  WiFiClient& client = strncmp(url, "http://", 7) == 0
+                           ? static_cast<WiFiClient&>(plainClient)
+                           : static_cast<WiFiClient&>(secureClient);
   HTTPClient http;
   http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
@@ -1248,20 +1302,54 @@ void enrichPlane(int index) {
 
   char url[128];
   JsonDocument doc;
-  snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/callsign/%s", p.callsign);
-  if (httpsGetJson(url, doc)) {
-    const char* from = doc["response"]["flightroute"]["origin"]["municipality"] | nullptr;
-    const char* to = doc["response"]["flightroute"]["destination"]["municipality"] | nullptr;
-    const char* airline = doc["response"]["flightroute"]["airline"]["name"] | nullptr;
-    if (from && to) {
-      snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
+  bool localDetails = false;
+  if (strlen(p.hex)) {
+    char localUrl[240];
+    snprintf(localUrl, sizeof(localUrl), "%s/api/aircraft?hex=%s&callsign=%s",
+             FLIGHTDESK_SIMULATOR_BASE_URL, p.hex, p.callsign);
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(8000);
+    if (http.begin(client, localUrl)) {
+      if (http.GET() == HTTP_CODE_OK && !deserializeJson(doc, http.getString())) {
+        localDetails = true;
+        const char* from = doc["origin"]["city"] | nullptr;
+        const char* to = doc["destination"]["city"] | nullptr;
+        if (from && to) snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
+        const char* type = doc["type"] | nullptr;
+        if (type && strlen(type)) copyClean(p.type, sizeof(p.type), type, p.type);
+        const char* registration = doc["registration"] | nullptr;
+        if (registration) copyClean(p.registration, sizeof(p.registration), registration, p.registration);
+        const char* photo = doc["photo"] | nullptr;
+        if (photo && strlen(photo)) {
+          copyClean(p.photoUrl, sizeof(p.photoUrl), photo, "");
+          snprintf(localUrl, sizeof(localUrl), "%s/api/esp32/photo.jpg?hex=%s&callsign=%s",
+                   FLIGHTDESK_SIMULATOR_BASE_URL, p.hex, p.callsign);
+          photoReady = downloadSelectedPhoto(localUrl);
+          copyClean(p.photo, sizeof(p.photo), photoReady ? "PHOTO OK" : "PHOTO KO", "PHOTO KO");
+        }
+      }
+      http.end();
     }
-    if (airline) copyClean(p.airline, sizeof(p.airline), airline, "");
-  } else {
-    Serial.printf("[DETAIL] Route indisponible pour %s\n", p.callsign);
   }
 
-  if (strlen(p.hex)) {
+  if (!localDetails || strstr(p.route, "inconnus")) {
+    snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/callsign/%s", p.callsign);
+    doc.clear();
+    if (httpsGetJson(url, doc)) {
+      const char* from = doc["response"]["flightroute"]["origin"]["municipality"] | nullptr;
+      const char* to = doc["response"]["flightroute"]["destination"]["municipality"] | nullptr;
+      const char* airline = doc["response"]["flightroute"]["airline"]["name"] | nullptr;
+      if (from && to) {
+        snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
+      }
+      if (airline) copyClean(p.airline, sizeof(p.airline), airline, "");
+    } else {
+      Serial.printf("[DETAIL] Route indisponible pour %s\n", p.callsign);
+    }
+  }
+
+  if (strlen(p.hex) && !photoReady) {
     doc.clear();
     snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/aircraft/%s", p.hex);
     if (httpsGetJson(url, doc)) {
@@ -1289,7 +1377,7 @@ void enrichPlane(int index) {
     } else {
       copyClean(p.photo, sizeof(p.photo), "PHOTO KO", "PHOTO KO");
     }
-  } else {
+  } else if (!photoReady) {
     copyClean(p.photo, sizeof(p.photo), "SANS PHOTO", "SANS PHOTO");
   }
 
