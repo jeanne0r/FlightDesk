@@ -23,10 +23,6 @@
 #include "embedded_map.h"
 #include "ui_font.h"
 
-#ifndef FLIGHTDESK_SIMULATOR_BASE_URL
-#define FLIGHTDESK_SIMULATOR_BASE_URL "http://192.168.1.16:4173"
-#endif
-
 namespace {
 
 constexpr const char* kBuildName = "FlightDesk Waveshare 2.8C web UI port";
@@ -81,6 +77,9 @@ JPEGDEC jpeg;
 Preferences prefs;
 WebServer setupServer(80);
 WebServer statusServer(8081);
+char lastDetailStatus[72] = "aucune requete";
+int lastPhotoHttpCode = 0;
+char lastPhotoStatus[72] = "aucune photo";
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
@@ -1045,25 +1044,6 @@ bool fetchTrafficPayload(const char* provider, const char* url, String& payload)
   return true;
 }
 
-bool fetchSimulatorTraffic(String& payload) {
-  char url[192];
-  snprintf(url, sizeof(url), "%s/api/traffic?lat=%.5f&lon=%.5f&range=%d",
-           FLIGHTDESK_SIMULATOR_BASE_URL, radarLat, radarLon, radarRangeKm);
-  WiFiClient client;
-  HTTPClient http;
-  http.setTimeout(3500);
-  if (!http.begin(client, url)) return false;
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("[TRAFFIC] Simulateur HTTP code=%d\n", code);
-    http.end();
-    return false;
-  }
-  payload = http.getString();
-  http.end();
-  return true;
-}
-
 void fetchTraffic() {
   if (WiFi.status() != WL_CONNECTED) {
     trafficLive = false;
@@ -1071,23 +1051,23 @@ void fetchTraffic() {
     return;
   }
 
-  char url[2][144];
+  char url[3][144];
   const int radiusNm = max(1, static_cast<int>(round(radarRangeKm / 1.852)));
-  snprintf(url[0], sizeof(url[0]), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
+  snprintf(url[0], sizeof(url[0]), "https://opendata.adsb.fi/api/v3/lat/%.5f/lon/%.5f/dist/%d",
            radarLat, radarLon, radiusNm);
-  snprintf(url[1], sizeof(url[1]), "https://opendata.adsb.fi/api/v2/lat/%.5f/lon/%.5f/dist/%d",
+  snprintf(url[1], sizeof(url[1]), "https://api.adsb.lol/v2/point/%.5f/%.5f/%d",
+           radarLat, radarLon, radiusNm);
+  snprintf(url[2], sizeof(url[2]), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
            radarLat, radarLon, radiusNm);
 
   String payload;
   const char* provider = nullptr;
-  bool simulatorFeed = false;
-  if (fetchSimulatorTraffic(payload)) {
-    provider = "simulateur OpenSky";
-    simulatorFeed = true;
-  } else if (fetchTrafficPayload("airplanes.live", url[0], payload)) {
-    provider = "airplanes.live";
-  } else if (fetchTrafficPayload("adsb.fi", url[1], payload)) {
+  if (fetchTrafficPayload("adsb.fi", url[0], payload)) {
     provider = "adsb.fi";
+  } else if (fetchTrafficPayload("adsb.lol", url[1], payload)) {
+    provider = "adsb.lol";
+  } else if (fetchTrafficPayload("airplanes.live", url[2], payload)) {
+    provider = "airplanes.live";
   } else {
     trafficLive = false;
     livePlaneCount = 0;
@@ -1107,29 +1087,6 @@ void fetchTraffic() {
   if (aircraft.isNull()) aircraft = doc["aircraft"].as<JsonArray>();
   static LivePlane fetchedPlanes[kMaxLivePlanes];
   int count = 0;
-  if (simulatorFeed) {
-    for (JsonArray state : doc["states"].as<JsonArray>()) {
-      if (count >= kMaxLivePlanes) break;
-      if (state.size() < 11 || state[5].isNull() || state[6].isNull()) continue;
-      LivePlane& p = fetchedPlanes[count];
-      p.lon = state[5].as<double>();
-      p.lat = state[6].as<double>();
-      if (!updateLivePlanePosition(p)) continue;
-      copyClean(p.hex, sizeof(p.hex), state[0] | "", "");
-      copyClean(p.callsign, sizeof(p.callsign), state[1] | "", "VOL");
-      copyClean(p.type, sizeof(p.type), "TYPE INCONNU", "TYPE INCONNU");
-      p.registration[0] = '\0';
-      p.airline[0] = '\0';
-      formatRoute(p.route, sizeof(p.route), "");
-      copyClean(p.photo, sizeof(p.photo), "INFO...", "INFO...");
-      p.photoUrl[0] = '\0';
-      p.heading = static_cast<int>(round(state[10] | 0.0)) - 90;
-      p.altitudeM = static_cast<int>(round(state[7].isNull() ? (state[13] | 0.0) : state[7].as<double>()));
-      p.speedKmh = static_cast<int>(round((state[9] | 0.0) * 3.6));
-      p.enriched = false;
-      ++count;
-    }
-  }
   for (JsonObject ac : aircraft) {
     if (count >= kMaxLivePlanes) break;
     if (!ac["lat"].is<double>() || !ac["lon"].is<double>()) continue;
@@ -1202,15 +1159,25 @@ bool httpsGetJson(const char* url, JsonDocument& doc) {
   HTTPClient http;
   http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
   http.setTimeout(7000);
-  if (!http.begin(client, url)) return false;
+  if (!http.begin(client, url)) {
+    snprintf(lastDetailStatus, sizeof(lastDetailStatus), "begin KO: %.40s", url);
+    return false;
+  }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
+    snprintf(lastDetailStatus, sizeof(lastDetailStatus), "HTTP %d: %.40s", code, url);
     http.end();
     return false;
   }
   const String payload = http.getString();
   http.end();
-  return !deserializeJson(doc, payload);
+  const DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    snprintf(lastDetailStatus, sizeof(lastDetailStatus), "JSON %s: %.36s", error.c_str(), url);
+  } else {
+    snprintf(lastDetailStatus, sizeof(lastDetailStatus), "OK: %.50s", url);
+  }
+  return !error;
 }
 
 int jpegDrawPhoto(JPEGDRAW* draw) {
@@ -1238,7 +1205,10 @@ void clearSelectedPhoto(uint16_t color = rgb565(5, 28, 22)) {
 }
 
 bool downloadSelectedPhoto(const char* url) {
-  if (!url || !strlen(url) || !jpegBuffer || !selectedPhotoFrame || WiFi.status() != WL_CONNECTED) return false;
+  if (!url || !strlen(url) || !jpegBuffer || !selectedPhotoFrame || WiFi.status() != WL_CONNECTED) {
+    copyClean(lastPhotoStatus, sizeof(lastPhotoStatus), "conditions KO", "");
+    return false;
+  }
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
   secureClient.setInsecure();
@@ -1249,9 +1219,14 @@ bool downloadSelectedPhoto(const char* url) {
   http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(5500);
-  if (!http.begin(client, url)) return false;
+  if (!http.begin(client, url)) {
+    copyClean(lastPhotoStatus, sizeof(lastPhotoStatus), "begin KO", "");
+    return false;
+  }
   const int code = http.GET();
+  lastPhotoHttpCode = code;
   if (code != HTTP_CODE_OK) {
+    snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "HTTP %d", code);
     http.end();
     return false;
   }
@@ -1274,10 +1249,14 @@ bool downloadSelectedPhoto(const char* url) {
     if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
   }
   http.end();
-  if (total < 128 || total >= jpegBufferSize) return false;
+  if (total < 128 || total >= jpegBufferSize) {
+    snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "octets=%u attendus=%d", total, contentLength);
+    return false;
+  }
 
   clearSelectedPhoto();
   if (!jpeg.openRAM(jpegBuffer, static_cast<int>(total), jpegDrawPhoto)) {
+    snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG open KO octets=%u", total);
     return false;
   }
   const int jw = jpeg.getWidth();
@@ -1290,8 +1269,10 @@ bool downloadSelectedPhoto(const char* url) {
   }
   jpeg.setPixelType(RGB565_BIG_ENDIAN);
   const int result = jpeg.decode(0, 0, scale);
+  snprintf(lastPhotoStatus, sizeof(lastPhotoStatus), "JPEG %dx%d octets=%u decode=%d", jw, jh, total, result);
   jpeg.close();
-  return result == JPEG_SUCCESS;
+  // JPEGDEC::decode() returns 1 on success; JPEG_SUCCESS is a separate error code (0).
+  return result == 1;
 }
 
 void enrichPlane(int index) {
@@ -1302,83 +1283,69 @@ void enrichPlane(int index) {
 
   char url[128];
   JsonDocument doc;
-  bool localDetails = false;
   if (strlen(p.hex)) {
-    char localUrl[240];
-    snprintf(localUrl, sizeof(localUrl), "%s/api/aircraft?hex=%s&callsign=%s",
-             FLIGHTDESK_SIMULATOR_BASE_URL, p.hex, p.callsign);
-    WiFiClient client;
-    HTTPClient http;
-    http.setTimeout(8000);
-    if (http.begin(client, localUrl)) {
-      if (http.GET() == HTTP_CODE_OK && !deserializeJson(doc, http.getString())) {
-        localDetails = true;
-        const char* from = doc["origin"]["city"] | nullptr;
-        const char* to = doc["destination"]["city"] | nullptr;
-        if (from && to) snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
-        const char* type = doc["type"] | nullptr;
-        if (type && strlen(type)) copyClean(p.type, sizeof(p.type), type, p.type);
-        const char* registration = doc["registration"] | nullptr;
-        if (registration) copyClean(p.registration, sizeof(p.registration), registration, p.registration);
-        const char* photo = doc["photo"] | nullptr;
-        if (photo && strlen(photo)) {
-          copyClean(p.photoUrl, sizeof(p.photoUrl), photo, "");
-          snprintf(localUrl, sizeof(localUrl), "%s/api/esp32/photo.jpg?hex=%s&callsign=%s",
-                   FLIGHTDESK_SIMULATOR_BASE_URL, p.hex, p.callsign);
-          photoReady = downloadSelectedPhoto(localUrl);
-          copyClean(p.photo, sizeof(p.photo), photoReady ? "PHOTO OK" : "PHOTO KO", "PHOTO KO");
-        }
-      }
-      http.end();
-    }
-  }
-
-  if (!localDetails || strstr(p.route, "inconnus")) {
-    snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/callsign/%s", p.callsign);
-    doc.clear();
+    // ADSBdb can return the airframe and route in one request.
+    snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/aircraft/%s?callsign=%s", p.hex, p.callsign);
     if (httpsGetJson(url, doc)) {
-      const char* from = doc["response"]["flightroute"]["origin"]["municipality"] | nullptr;
-      const char* to = doc["response"]["flightroute"]["destination"]["municipality"] | nullptr;
-      const char* airline = doc["response"]["flightroute"]["airline"]["name"] | nullptr;
-      if (from && to) {
-        snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
-      }
-      if (airline) copyClean(p.airline, sizeof(p.airline), airline, "");
-    } else {
-      Serial.printf("[DETAIL] Route indisponible pour %s\n", p.callsign);
-    }
-  }
-
-  if (strlen(p.hex) && !photoReady) {
-    doc.clear();
-    snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/aircraft/%s", p.hex);
-    if (httpsGetJson(url, doc)) {
-      const char* photo = doc["response"]["aircraft"]["url_photo_thumbnail"] | nullptr;
-      if (photo && strlen(photo)) {
-        copyClean(p.photoUrl, sizeof(p.photoUrl), photo, "");
-        copyClean(p.photo, sizeof(p.photo), "PHOTO...", "PHOTO...");
-        if (downloadSelectedPhoto(p.photoUrl)) {
-          photoReady = true;
-          copyClean(p.photo, sizeof(p.photo), "PHOTO OK", "PHOTO OK");
-        } else {
-          copyClean(p.photo, sizeof(p.photo), "PHOTO KO", "PHOTO KO");
-        }
-      } else {
-        copyClean(p.photo, sizeof(p.photo), "SANS PHOTO", "SANS PHOTO");
-      }
-      const char* type = doc["response"]["aircraft"]["type"] | nullptr;
-      if (type && strlen(type)) {
-        copyClean(p.type, sizeof(p.type), type, p.type);
-      }
-      const char* registration = doc["response"]["aircraft"]["registration"] | nullptr;
+      const char* type = doc["response"]["aircraft"]["type"].as<const char*>();
+      const char* registration = doc["response"]["aircraft"]["registration"].as<const char*>();
+      const char* owner = doc["response"]["aircraft"]["registered_owner"].as<const char*>();
+      const char* photo = doc["response"]["aircraft"]["url_photo_thumbnail"].as<const char*>();
+      const char* from = doc["response"]["flightroute"]["origin"]["municipality"].as<const char*>();
+      const char* to = doc["response"]["flightroute"]["destination"]["municipality"].as<const char*>();
+      const char* airline = doc["response"]["flightroute"]["airline"]["name"].as<const char*>();
+      if (type && *type) copyClean(p.type, sizeof(p.type), type, p.type);
       if (registration) copyClean(p.registration, sizeof(p.registration), registration, p.registration);
-      const char* owner = doc["response"]["aircraft"]["registered_owner"] | nullptr;
-      if (owner && !p.airline[0]) copyClean(p.airline, sizeof(p.airline), owner, "");
-    } else {
-      copyClean(p.photo, sizeof(p.photo), "PHOTO KO", "PHOTO KO");
+      if (owner) copyClean(p.airline, sizeof(p.airline), owner, "");
+      if (airline) copyClean(p.airline, sizeof(p.airline), airline, p.airline);
+      if (photo && *photo) copyClean(p.photoUrl, sizeof(p.photoUrl), photo, "");
+      if (from && to) snprintf(p.route, sizeof(p.route), "%s -> %s", from, to);
     }
-  } else if (!photoReady) {
-    copyClean(p.photo, sizeof(p.photo), "SANS PHOTO", "SANS PHOTO");
+
+    if (strstr(p.route, "inconnus") && p.callsign[0]) {
+      doc.clear();
+      snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", p.callsign);
+      if (httpsGetJson(url, doc)) {
+        const char* route = doc["route"].as<const char*>();
+        if (route && strchr(route, '-')) {
+          copyClean(p.route, sizeof(p.route), route, p.route);
+        }
+      }
+    }
+
+    // HexDB covers smaller aircraft absent from ADSBdb, including FSF718Z.
+    if (!p.registration[0] || strcmp(p.type, "TYPE INCONNU") == 0) {
+      doc.clear();
+      snprintf(url, sizeof(url), "https://hexdb.io/api/v1/aircraft/%s", p.hex);
+      if (httpsGetJson(url, doc)) {
+        const char* type = doc["Type"].as<const char*>();
+        const char* registration = doc["Registration"].as<const char*>();
+        const char* owner = doc["RegisteredOwners"].as<const char*>();
+        if (type && *type) copyClean(p.type, sizeof(p.type), type, p.type);
+        if (registration && *registration) copyClean(p.registration, sizeof(p.registration), registration, p.registration);
+        if (owner && *owner) copyClean(p.airline, sizeof(p.airline), owner, p.airline);
+      }
+    }
+
+    // Planespotters has photos for airframes with no ADSBdb record.
+    if (!p.photoUrl[0]) {
+      doc.clear();
+      snprintf(url, sizeof(url), "https://api.planespotters.net/pub/photos/hex/%s", p.hex);
+      if (httpsGetJson(url, doc)) {
+        JsonArray photos = doc["photos"].as<JsonArray>();
+        const char* photo = photos.size()
+                                ? photos[static_cast<size_t>(0)]["thumbnail"]["src"].as<const char*>()
+                                : nullptr;
+        snprintf(lastDetailStatus, sizeof(lastDetailStatus), "photos=%u url=%s", photos.size(), photo ? "oui" : "non");
+        if (photo && *photo) copyClean(p.photoUrl, sizeof(p.photoUrl), photo, "");
+      }
+    }
+    if (p.photoUrl[0]) {
+      photoReady = downloadSelectedPhoto(p.photoUrl);
+      copyClean(p.photo, sizeof(p.photo), photoReady ? "PHOTO OK" : "PHOTO KO", "PHOTO KO");
+    } else {
+      copyClean(p.photo, sizeof(p.photo), "SANS PHOTO", "SANS PHOTO");
+    }
   }
 
   p.enriched = true;
@@ -2208,10 +2175,15 @@ void handleStatus() {
   doc["traffic_live"] = trafficLive;
   doc["aircraft_visible"] = visibleAircraftCount();
   doc["range_km"] = radarRangeKm;
+  doc["detail_status"] = lastDetailStatus;
+  doc["photo_http_code"] = lastPhotoHttpCode;
+  doc["photo_status"] = lastPhotoStatus;
   if (selectedPlane >= 0 && trafficLive && selectedPlane < livePlaneCount) {
     const LivePlane& p = livePlanes[selectedPlane];
     doc["selected"]["hex"] = p.hex;
     doc["selected"]["callsign"] = p.callsign;
+    doc["selected"]["type"] = p.type;
+    doc["selected"]["registration"] = p.registration;
     doc["selected"]["route"] = p.route;
     doc["selected"]["photo"] = p.photo;
     doc["selected"]["enriched"] = p.enriched;
