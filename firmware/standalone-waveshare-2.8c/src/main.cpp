@@ -153,8 +153,8 @@ int radarRangeKm = 50;
 bool nightMode = true;
 constexpr int kRadarCx = 240;
 constexpr int kRadarCy = 240;
-// The web scope occupies about 81% of the circular map surface.
-constexpr int kRadarRadius = 194;
+// Keep the bright radar rim close to the round display edge.
+constexpr int kRadarRadius = 230;
 constexpr int kMapRadius = 234;
 constexpr int kSweepBins = 240;
 constexpr int kSweepTrailBins = 43;
@@ -1849,7 +1849,7 @@ void buildRadarBaseFrame() {
               cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 23);
   }
 
-  drawTextCentered(cx, 422, "(c) OpenStreetMap contributors", rgb565(92, 151, 96), 1);
+  drawTextCentered(cx, 42, "(c) OpenStreetMap contributors", rgb565(92, 151, 96), 1);
 
   frame = drawFrame;
   radarBaseDirty = false;
