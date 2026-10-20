@@ -24,8 +24,12 @@ pour le cadre de la fiche et associées à l'identifiant de l'avion sélectionn�
 
 L'ESP32 récupère le trafic directement sur Internet via adsb.fi, adsb.lol puis
 airplanes.live. Il ne dépend d'aucun serveur sur le réseau local. Les tuiles
-OpenStreetMap sont aussi téléchargées directement. Une carte embarquée et des avions
-de démonstration servent de repli. Les pages Recherche et Assistant restent
+OpenStreetMap sont téléchargées en HTTPS et conservées en cache local LittleFS.
+Pendant un glissement, la carte suit le doigt ; les avions sont repositionnés
+au relâchement, puis le trafic est actualisé. Le trafic accepte jusqu'à 512 avions
+dans le rayon choisi et conserve les dernières données lors d'une panne temporaire
+de l'API. Une carte embarquée sert de repli ; les avions de démonstration ne
+s'affichent que sans Wi-Fi. Les pages Recherche et Assistant restent
 des maquettes fonctionnelles limitées : saisie texte et audio ne sont pas
 encore portés. Le rendu doit encore être ajusté sur un écran physique.
 

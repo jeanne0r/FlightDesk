@@ -2,6 +2,7 @@
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <LittleFS.h>
 #include <PNGdec.h>
 #include <Preferences.h>
 #include <WebServer.h>
@@ -64,6 +65,8 @@ spi_device_handle_t lcdSpi = nullptr;
 esp_lcd_panel_handle_t lcdPanel = nullptr;
 uint16_t* frame = nullptr;
 uint16_t* mapFrame = nullptr;
+uint16_t* mapFetchFrame = nullptr;
+uint16_t* mapDrawTarget = nullptr;
 uint16_t* radarBaseFrame = nullptr;
 uint8_t* radarAngleBins = nullptr;
 uint8_t* tileBuffer = nullptr;
@@ -106,11 +109,23 @@ float accX = 0.0f;
 float accY = 0.0f;
 float accZ = 0.0f;
 bool mapReady = false;
+bool tileCacheReady = false;
 bool mapDirty = false;
+int embeddedMapOffsetX = 0;
+int embeddedMapOffsetY = 0;
+uint32_t mapGeneration = 0;
+int lastMapTilesLoaded = 0;
+int lastMapTilesRequested = 0;
+int lastMapTileHttpCode = 0;
 bool radarBaseDirty = true;
 bool mapFetchInProgress = false;
 uint32_t lastTrafficFetchMs = 0;
 bool trafficLive = false;
+bool trafficFetchFailed = false;
+int lastTrafficHttpCode = 0;
+int lastTrafficReceived = 0;
+int lastTrafficPayloadBytes = 0;
+char lastTrafficProvider[20] = "";
 volatile bool trafficFetchRequested = false;
 volatile bool trafficFetchInProgress = false;
 volatile bool trafficFrameDirty = false;
@@ -209,8 +224,9 @@ struct LivePlane {
   bool enriched;
 };
 
-constexpr int kMaxLivePlanes = 36;
-LivePlane livePlanes[kMaxLivePlanes];
+constexpr int kMaxLivePlanes = 512;
+LivePlane* livePlanes = nullptr;
+LivePlane* fetchedPlanes = nullptr;
 int livePlaneCount = 0;
 
 enum class AppView : uint8_t {
@@ -568,12 +584,16 @@ void blendEmbeddedMap(uint8_t alpha) {
       if (pixel >= kWidth * kHeight) return;
       const int x = pixel % kWidth;
       const int y = pixel / kWidth;
-      const int dx = x - kRadarCx;
-      const int dy = y - kRadarCy;
-      if (dx * dx + dy * dy <= (kMapRadius - 2) * (kMapRadius - 2)) {
+      const int targetX = x + embeddedMapOffsetX;
+      const int targetY = y + embeddedMapOffsetY;
+      const int dx = targetX - kRadarCx;
+      const int dy = targetY - kRadarCy;
+      if (targetX >= 0 && targetX < kWidth && targetY >= 0 && targetY < kHeight &&
+          dx * dx + dy * dy <= (kMapRadius - 2) * (kMapRadius - 2)) {
         const uint8_t paletteIndex = static_cast<uint8_t>((packed >> shift) & 0x1F);
         const uint16_t color = pgm_read_word(&kEmbeddedMapPalette[paletteIndex]);
-        frame[pixel] = blend565(frame[pixel], color, alpha);
+        const int target = targetY * kWidth + targetX;
+        frame[target] = blend565(frame[target], color, alpha);
       }
       ++pixel;
     }
@@ -714,8 +734,8 @@ void blendRoundRect(int x, int y, int w, int h, int radius, uint16_t color, uint
 }
 
 void putMapPixel(int x, int y, uint16_t color) {
-  if (!mapFrame || x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
-  mapFrame[y * kWidth + x] = color;
+  if (!mapDrawTarget || x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
+  mapDrawTarget[y * kWidth + x] = color;
 }
 
 uint16_t radarTint(uint16_t rgb) {
@@ -726,10 +746,10 @@ uint16_t radarTint(uint16_t rgb) {
   return rgb565(2 + lum / 26, 12 + lum / 3, 6 + lum / 18);
 }
 
-void clearMapFrame() {
-  if (!mapFrame) return;
+void clearMapFrame(uint16_t* target) {
+  if (!target) return;
   for (int i = 0; i < kWidth * kHeight; ++i) {
-    mapFrame[i] = rgb565(2, 5, 3);
+    target[i] = rgb565(2, 5, 3);
   }
 }
 
@@ -757,6 +777,12 @@ double latToPixelY(double lat, int zoom) {
   return (0.5 - log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI)) * scale;
 }
 
+double pixelYToLat(double pixelY, int zoom) {
+  const double scale = 256.0 * static_cast<double>(1UL << zoom);
+  const double mercator = PI * (1.0 - 2.0 * pixelY / scale);
+  return atan(sinh(mercator)) / DEG_TO_RAD;
+}
+
 int zoomForRange(double lat, int rangeKm, int radiusPx) {
   const double metersPerPixel = (rangeKm * 1000.0) / max(1, radiusPx);
   const double target = 156543.03392 * cos(lat * DEG_TO_RAD) / metersPerPixel;
@@ -770,43 +796,61 @@ bool fetchTilePng(int z, int x, int y, int screenX, int screenY) {
   x = (x % tileCount + tileCount) % tileCount;
   if (y < 0 || y >= tileCount) return false;
 
-  char url[96];
-  snprintf(url, sizeof(url), "http://tile.openstreetmap.org/%d/%d/%d.png", z, x, y);
-  WiFiClient client;
-  HTTPClient http;
-  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(8000);
-  if (!http.begin(client, url)) {
-    return false;
-  }
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("[MAP] Tile HTTP %d %s\n", code, url);
-    http.end();
-    return false;
+  char cachePath[48];
+  snprintf(cachePath, sizeof(cachePath), "/osm_%d_%d_%d.png", z, x, y);
+  size_t total = 0;
+  if (tileCacheReady && LittleFS.exists(cachePath)) {
+    File cached = LittleFS.open(cachePath, "r");
+    if (cached && cached.size() >= 64 && cached.size() < tileBufferSize) {
+      total = cached.read(tileBuffer, cached.size());
+    }
+    cached.close();
   }
 
-  WiFiClient* stream = http.getStreamPtr();
-  const int contentLength = http.getSize();
-  size_t total = 0;
-  const uint32_t started = millis();
-  while (total < tileBufferSize && millis() - started < 12000) {
-    const size_t available = stream->available();
-    if (available == 0) {
-      if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
-      if (total > 0 && !stream->connected()) break;
-      delay(1);
-      continue;
+  if (total < 64) {
+    total = 0;
+    char url[96];
+    snprintf(url, sizeof(url), "https://tile.openstreetmap.org/%d/%d/%d.png", z, x, y);
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.setUserAgent("FlightDesk/0.3 (+https://github.com/jeanne0r/FlightDesk)");
+    http.setTimeout(8000);
+    if (!http.begin(client, url)) return false;
+    const int code = http.GET();
+    lastMapTileHttpCode = code;
+    if (code != HTTP_CODE_OK) {
+      Serial.printf("[MAP] Tile HTTP %d %s\n", code, url);
+      http.end();
+      return false;
     }
-    const size_t room = tileBufferSize - total;
-    const size_t chunk = min(available, room);
-    const int read = stream->readBytes(tileBuffer + total, chunk);
-    if (read <= 0) break;
-    total += read;
-    if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
+    WiFiClient* stream = http.getStreamPtr();
+    const int contentLength = http.getSize();
+    const uint32_t started = millis();
+    while (total < tileBufferSize && millis() - started < 12000) {
+      const size_t available = stream->available();
+      if (available == 0) {
+        if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
+        if (total > 0 && !stream->connected()) break;
+        delay(1);
+        continue;
+      }
+      const size_t chunk = min(available, tileBufferSize - total);
+      const int read = stream->readBytes(tileBuffer + total, chunk);
+      if (read <= 0) break;
+      total += read;
+      if (contentLength > 0 && total >= static_cast<size_t>(contentLength)) break;
+    }
+    http.end();
+    if (total >= 64 && total < tileBufferSize && tileCacheReady) {
+      File cached = LittleFS.open(cachePath, "w");
+      if (cached) {
+        const bool complete = cached.write(tileBuffer, total) == total;
+        cached.close();
+        if (!complete) LittleFS.remove(cachePath);
+      }
+    }
   }
-  http.end();
   if (total < 64 || total >= tileBufferSize) {
     Serial.printf("[MAP] Tile size KO z=%d x=%d y=%d bytes=%u\n", z, x, y, static_cast<unsigned>(total));
     return false;
@@ -828,12 +872,16 @@ bool fetchTilePng(int z, int x, int y, int screenX, int screenY) {
 }
 
 void fetchMapTiles() {
-  if (!mapFrame || !tileBuffer || WiFi.status() != WL_CONNECTED || mapFetchInProgress) return;
+  if (!mapFrame || !mapFetchFrame || !tileBuffer || WiFi.status() != WL_CONNECTED || mapFetchInProgress) return;
   mapFetchInProgress = true;
-  clearMapFrame();
-  const int zoom = zoomForRange(radarLat, radarRangeKm, kRadarRadius);
-  const double centerX = lonToPixelX(radarLon, zoom);
-  const double centerY = latToPixelY(radarLat, zoom);
+  const uint32_t startedGeneration = mapGeneration;
+  const double centerLat = radarLat;
+  const double centerLon = radarLon;
+  const int zoom = zoomForRange(centerLat, radarRangeKm, kRadarRadius);
+  mapDrawTarget = mapFetchFrame;
+  clearMapFrame(mapDrawTarget);
+  const double centerX = lonToPixelX(centerLon, zoom);
+  const double centerY = latToPixelY(centerLat, zoom);
   const double topLeftX = centerX - kRadarCx;
   const double topLeftY = centerY - kRadarCy;
   const int minTileX = floor(topLeftX / 256.0);
@@ -842,7 +890,7 @@ void fetchMapTiles() {
   const int maxTileY = floor((topLeftY + kHeight) / 256.0);
   int ok = 0;
   int total = 0;
-  Serial.printf("[MAP] Fetch OSM z=%d center=%.5f,%.5f npa=%s\n", zoom, radarLat, radarLon, currentPostal);
+  Serial.printf("[MAP] Fetch OSM z=%d center=%.5f,%.5f npa=%s\n", zoom, centerLat, centerLon, currentPostal);
   for (int ty = minTileY; ty <= maxTileY; ++ty) {
     for (int tx = minTileX; tx <= maxTileX; ++tx) {
       const int screenX = static_cast<int>(round(tx * 256.0 - topLeftX));
@@ -854,11 +902,17 @@ void fetchMapTiles() {
       delay(80);
     }
   }
-  mapReady = ok > 0;
-  if (mapReady) {
+  lastMapTilesLoaded = ok;
+  lastMapTilesRequested = total;
+  if (ok > 0 && startedGeneration == mapGeneration && !mapDragging) {
+    uint16_t* oldFrame = mapFrame;
+    mapFrame = mapFetchFrame;
+    mapFetchFrame = oldFrame;
+    mapReady = true;
     mapDirty = false;
+    radarBaseDirty = true;
   }
-  radarBaseDirty = true;
+  mapDrawTarget = nullptr;
   mapFetchInProgress = false;
   Serial.printf("[MAP] Tiles %d/%d ready=%d\n", ok, total, mapReady);
 }
@@ -940,8 +994,8 @@ const RadarPlane& fallbackPlane(int index) {
 }
 
 int aircraftCount() {
-  return trafficLive && livePlaneCount > 0 ? livePlaneCount
-                                           : static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0]));
+  if (trafficLive) return livePlaneCount;
+  return WiFi.status() == WL_CONNECTED ? 0 : static_cast<int>(sizeof(kPlanes) / sizeof(kPlanes[0]));
 }
 
 int planeX(int index) {
@@ -1017,7 +1071,6 @@ void updateLivePlanePositions() {
     livePlanes[write++] = p;
   }
   livePlaneCount = write;
-  trafficLive = livePlaneCount > 0;
   if (selectedPlane >= livePlaneCount) selectedPlane = -1;
 }
 
@@ -1026,12 +1079,13 @@ bool fetchTrafficPayload(const char* provider, const char* url, String& payload)
   client.setInsecure();
   HTTPClient http;
   http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
-  http.setTimeout(4500);
+  http.setTimeout(12000);
   if (!http.begin(client, url)) {
     Serial.printf("[TRAFFIC] %s begin KO\n", provider);
     return false;
   }
   const int code = http.GET();
+  lastTrafficHttpCode = code;
   if (code != HTTP_CODE_OK) {
     Serial.printf("[TRAFFIC] %s HTTP KO code=%d\n", provider, code);
     http.end();
@@ -1044,6 +1098,7 @@ bool fetchTrafficPayload(const char* provider, const char* url, String& payload)
 }
 
 void fetchTraffic() {
+  if (!livePlanes || !fetchedPlanes) return;
   if (WiFi.status() != WL_CONNECTED) {
     trafficLive = false;
     livePlaneCount = 0;
@@ -1061,6 +1116,10 @@ void fetchTraffic() {
 
   String payload;
   const char* provider = nullptr;
+  const uint32_t generation = mapGeneration;
+  const double requestedLat = radarLat;
+  const double requestedLon = radarLon;
+  const int requestedRange = radarRangeKm;
   if (fetchTrafficPayload("adsb.fi", url[0], payload)) {
     provider = "adsb.fi";
   } else if (fetchTrafficPayload("adsb.lol", url[1], payload)) {
@@ -1068,23 +1127,31 @@ void fetchTraffic() {
   } else if (fetchTrafficPayload("airplanes.live", url[2], payload)) {
     provider = "airplanes.live";
   } else {
-    trafficLive = false;
-    livePlaneCount = 0;
+    trafficFetchFailed = true;
     trafficFrameDirty = true;
-    Serial.println("[TRAFFIC] all live providers KO, fallback simulation");
+    Serial.println("[TRAFFIC] all live providers KO");
     return;
   }
 
+  lastTrafficPayloadBytes = payload.length();
+  JsonDocument filter;
+  const char* fields[] = {"lat", "lon", "track", "true_heading", "hex", "flight", "r",
+                          "t", "desc", "route", "alt_baro", "alt_geom", "gs"};
+  for (const char* field : fields) {
+    filter["ac"][0][field] = true;
+    filter["aircraft"][0][field] = true;
+  }
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload);
+  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
   if (err) {
+    trafficFetchFailed = true;
     Serial.printf("[TRAFFIC] JSON KO %s bytes=%u\n", err.c_str(), payload.length());
     return;
   }
 
   JsonArray aircraft = doc["ac"].as<JsonArray>();
   if (aircraft.isNull()) aircraft = doc["aircraft"].as<JsonArray>();
-  static LivePlane fetchedPlanes[kMaxLivePlanes];
+  lastTrafficReceived = aircraft.size();
   int count = 0;
   for (JsonObject ac : aircraft) {
     if (count >= kMaxLivePlanes) break;
@@ -1117,6 +1184,13 @@ void fetchTraffic() {
     ++count;
   }
 
+  if (generation != mapGeneration || requestedLat != radarLat || requestedLon != radarLon ||
+      requestedRange != radarRangeKm) {
+    lastTrafficFetchMs = 0;
+    Serial.println("[TRAFFIC] obsolete response discarded after map change");
+    return;
+  }
+
   // Keep downloaded details across the 20-second traffic refresh. Array order
   // changes frequently, so the ICAO hex identifies each aircraft.
   for (int i = 0; i < count; ++i) {
@@ -1140,7 +1214,9 @@ void fetchTraffic() {
     livePlanes[i] = fetchedPlanes[i];
   }
   livePlaneCount = count;
-  trafficLive = count > 0;
+  trafficLive = true;
+  trafficFetchFailed = false;
+  copyClean(lastTrafficProvider, sizeof(lastTrafficProvider), provider, "");
   if (selectedPlane >= 0) {
     selectedPlane = -1;
     for (int i = 0; i < livePlaneCount; ++i) {
@@ -1151,7 +1227,8 @@ void fetchTraffic() {
     }
   }
   trafficFrameDirty = true;
-  Serial.printf("[TRAFFIC] %d avion(s) live via %s\n", livePlaneCount, provider);
+  Serial.printf("[TRAFFIC] %d/%d avion(s) live via %s, %d bytes\n", livePlaneCount,
+                lastTrafficReceived, provider, lastTrafficPayloadBytes);
 }
 
 bool httpsGetJson(const char* url, JsonDocument& doc) {
@@ -1786,6 +1863,8 @@ void buildRadarBaseFrame() {
               cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 23);
   }
 
+  drawTextCentered(cx, 422, "(c) OpenStreetMap contributors", rgb565(92, 151, 96), 1);
+
   frame = drawFrame;
   radarBaseDirty = false;
 }
@@ -1851,7 +1930,10 @@ void drawRadarFrame() {
   char countText[12];
   snprintf(countText, sizeof(countText), "%d", visibleAircraftCount());
   drawTextCentered(cx, 77, "18:47", text, 1);
-  drawTextCentered(cx, 96, trafficLive ? "LIVE AIRPLANES" : "TRAFIC SIMULE", softGreen, 1);
+  drawTextCentered(cx, 96, trafficLive ? "LIVE AIRPLANES" :
+                           WiFi.status() == WL_CONNECTED ?
+                             (trafficFetchFailed ? "TRAFIC INDISPONIBLE" : "CHARGEMENT TRAFIC") :
+                             "TRAFIC SIMULE", softGreen, 1);
   drawTextCentered(cx, 119, countText, green, 2);
   drawTextCentered(cx, 144, "AVIONS", green, 2);
   char innerRange[8];
@@ -1984,6 +2066,12 @@ bool initDisplay() {
     Serial.println("[DISPLAY] Map framebuffer PSRAM KO");
     return false;
   }
+  mapFetchFrame = static_cast<uint16_t*>(heap_caps_malloc(kWidth * kHeight * sizeof(uint16_t),
+                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!mapFetchFrame) {
+    Serial.println("[DISPLAY] Map staging framebuffer PSRAM KO");
+    return false;
+  }
   radarBaseFrame = static_cast<uint16_t*>(heap_caps_malloc(kWidth * kHeight * sizeof(uint16_t),
                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!radarBaseFrame) {
@@ -2016,7 +2104,7 @@ bool initDisplay() {
     return false;
   }
   clearSelectedPhoto();
-  clearMapFrame();
+  clearMapFrame(mapFrame);
 
   initBacklight();
   drawRadarFrame();
@@ -2105,12 +2193,16 @@ void loadLocationSettings() {
 void changePostal(int delta) {
   applyPostalIndex(postalIndex + delta);
   saveLocationSettings();
+  ++mapGeneration;
+  embeddedMapOffsetX = 0;
+  embeddedMapOffsetY = 0;
   mapReady = false;
   radarBaseDirty = true;
   mapReloadAfterMs = 0;
   lastMapFetchMs = 0;
   lastTrafficFetchMs = 0;
   trafficLive = false;
+  trafficFetchFailed = false;
   livePlaneCount = 0;
   selectedPlane = -1;
   Serial.printf("[LOC] NPA %s %.5f,%.5f\n", currentPostal, radarLat, radarLon);
@@ -2159,7 +2251,20 @@ void handleStatus() {
   doc["wifi"] = WiFi.status() == WL_CONNECTED;
   doc["traffic_live"] = trafficLive;
   doc["aircraft_visible"] = visibleAircraftCount();
+  doc["traffic_received"] = lastTrafficReceived;
+  doc["traffic_capacity"] = kMaxLivePlanes;
+  doc["traffic_provider"] = lastTrafficProvider;
+  doc["traffic_http_code"] = lastTrafficHttpCode;
+  doc["traffic_payload_bytes"] = lastTrafficPayloadBytes;
+  doc["traffic_fetch_failed"] = trafficFetchFailed;
   doc["range_km"] = radarRangeKm;
+  doc["center_lat"] = radarLat;
+  doc["center_lon"] = radarLon;
+  doc["map_ready"] = mapReady;
+  doc["map_dragging"] = mapDragging;
+  doc["map_tiles_loaded"] = lastMapTilesLoaded;
+  doc["map_tiles_requested"] = lastMapTilesRequested;
+  doc["map_tile_http_code"] = lastMapTileHttpCode;
   doc["detail_status"] = lastDetailStatus;
   doc["photo_http_code"] = lastPhotoHttpCode;
   doc["photo_status"] = lastPhotoStatus;
@@ -2316,12 +2421,16 @@ bool inBottomNav(uint16_t x, uint16_t y) {
 }
 
 void invalidateLiveData() {
+  ++mapGeneration;
+  embeddedMapOffsetX = 0;
+  embeddedMapOffsetY = 0;
   mapReady = false;
   mapDirty = false;
   mapReloadAfterMs = 0;
   lastMapFetchMs = 0;
   lastTrafficFetchMs = 0;
   trafficLive = false;
+  trafficFetchFailed = false;
   livePlaneCount = 0;
   selectedPlane = -1;
   radarBaseDirty = true;
@@ -2367,23 +2476,26 @@ void shiftMapFrame(int dx, int dy) {
 
 void moveMapByPixels(int dx, int dy) {
   if (dx == 0 && dy == 0) return;
-  const double metersPerPixel = (radarRangeKm * 1000.0) / max(1, kRadarRadius);
-  const double metersEast = -dx * metersPerPixel;
-  const double metersNorth = dy * metersPerPixel;
-  const double latMeters = 111320.0;
-  const double lonMeters = 111320.0 * fmax(0.2, cos(radarLat * DEG_TO_RAD));
-  radarLat += metersNorth / latMeters;
-  radarLon += metersEast / lonMeters;
+  const int zoom = zoomForRange(radarLat, radarRangeKm, kRadarRadius);
+  const double scale = 256.0 * static_cast<double>(1UL << zoom);
+  const double centerX = lonToPixelX(radarLon, zoom) - dx;
+  const double centerY = latToPixelY(radarLat, zoom) - dy;
+  radarLat = pixelYToLat(centerY, zoom);
+  radarLon = centerX / scale * 360.0 - 180.0;
   radarLat = constrain(radarLat, -80.0, 80.0);
   if (radarLon > 180.0) radarLon -= 360.0;
   if (radarLon < -180.0) radarLon += 360.0;
   copyClean(currentPostal, sizeof(currentPostal), "MANUEL", "MANUEL");
-  shiftMapFrame(dx, dy);
+  if (mapReady) {
+    shiftMapFrame(dx, dy);
+  } else {
+    embeddedMapOffsetX += dx;
+    embeddedMapOffsetY += dy;
+  }
+  ++mapGeneration;
   mapDirty = true;
   radarBaseDirty = true;
   mapReloadAfterMs = millis() + 900;
-  lastMapFetchMs = 0;
-  updateLivePlanePositions();
   selectedPlane = -1;
 }
 
@@ -2527,7 +2639,9 @@ void pollTouch() {
     if (mapDragging) {
       saveLocationSettings();
       mapReloadAfterMs = millis() + 250;
+      lastMapFetchMs = 0;
       lastTrafficFetchMs = 0;
+      updateLivePlanePositions();
       Serial.printf("[MAP] Centre manuel %.5f,%.5f\n", radarLat, radarLon);
     } else {
       handleTap(touchStartX, touchStartY);
@@ -2640,6 +2754,14 @@ void setup() {
   Wire.begin(kI2cSda, kI2cScl, 400000);
   scanI2c();
   initDisplay();
+  livePlanes = static_cast<LivePlane*>(heap_caps_calloc(kMaxLivePlanes, sizeof(LivePlane),
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  fetchedPlanes = static_cast<LivePlane*>(heap_caps_calloc(kMaxLivePlanes, sizeof(LivePlane),
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!livePlanes || !fetchedPlanes) {
+    Serial.println("[TRAFFIC] PSRAM plane buffers KO");
+  }
+  tileCacheReady = LittleFS.begin(true);
   initTouch();
   initImu();
   loadWifiSettings();
@@ -2682,7 +2804,7 @@ void loop() {
     printStatus();
   }
 
-  if ((!mapReady || mapDirty) && WiFi.status() == WL_CONNECTED && now - bootMs >= 6000 &&
+  if ((!mapReady || mapDirty) && !mapDragging && WiFi.status() == WL_CONNECTED && now - bootMs >= 6000 &&
       (mapReloadAfterMs == 0 || now >= mapReloadAfterMs) &&
       (lastMapFetchMs == 0 || mapDirty || now - lastMapFetchMs >= 60000)) {
     lastMapFetchMs = now;
@@ -2690,7 +2812,7 @@ void loop() {
   }
 
   if (WiFi.status() == WL_CONNECTED && now - bootMs >= 3000 &&
-      (lastTrafficFetchMs == 0 || now - lastTrafficFetchMs >= 20000)) {
+      (lastTrafficFetchMs == 0 || now - lastTrafficFetchMs >= (trafficFetchFailed ? 5000U : 20000U))) {
     lastTrafficFetchMs = now;
     requestTrafficFetch();
   } else if (WiFi.status() != WL_CONNECTED && trafficLive) {
