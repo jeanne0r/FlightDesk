@@ -1,66 +1,35 @@
-# FlightDesk for Waveshare ESP32-S3-Touch-LCD-2.8C
+# FlightDesk pour Waveshare ESP32-S3 Touch LCD 2.8C
 
-This branch targets the hardware received for the final FlightDesk device:
-Waveshare `ESP32-S3-Touch-LCD-2.8C`, SKU `29086`.
+Cette cible pilote le panneau rond 480 × 480 directement : initialisation du
+ST7701 par SPI, transfert des pixels par le bus RGB 16 bits et tactile GT911
+par I2C. Le port série est réservé aux diagnostics. La cible est le modèle
+Waveshare 2.8C, SKU 29086, avec 16 Mo de flash et 8 Mo de PSRAM.
 
-The first commit is a bring-up target, not the final radar UI. It validates the
-board safely before porting the autonomous Xiaozhi UI to the 480 x 480 RGB
-panel.
+## Interface
 
-## Hardware facts
+Le radar reprend la palette verte, les cercles, le balayage, les avions, la
+carte en filigrane et la navigation du simulateur web. Les touches permettent
+de sélectionner un avion, ouvrir les pages, choisir un code postal parmi les
+présélections, régler le rayon (20/50/100/250 km), basculer le mode nuit et
+recentrer la carte. Le rayon et le mode nuit sont enregistrés en NVS.
 
-From the official Waveshare documentation:
+Les tuiles OpenStreetMap et les données ADS-B sont téléchargées directement
+par l'ESP32 quand le Wi-Fi est disponible. Une carte embarquée et des avions
+de démonstration servent de repli. Les pages Recherche et Assistant restent
+des maquettes fonctionnelles limitées : saisie texte et audio ne sont pas
+encore portés. Le rendu doit encore être ajusté sur un écran physique.
 
-- ESP32-S3R8 dual-core MCU.
-- 16 MB Flash and 8 MB PSRAM.
-- 2.8 inch round capacitive touch LCD, 480 x 480.
-- I2C touch interface with interrupt support.
-- Onboard QMI8658 IMU, PCF85063 RTC, TF card slot, buzzer, battery charger.
-- External I2C header uses `SCL=GPIO7` and `SDA=GPIO15`.
-
-Reference: <https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.8C>
-
-## Current target
-
-`waveshare_2_8c_bringup` currently checks:
-
-- USB serial boot.
-- ESP32-S3 16 MB Flash / 8 MB OPI PSRAM board profile.
-- Wi-Fi connection when local secrets are supplied.
-- I2C bus scan on the documented Waveshare I2C pins.
-
-It deliberately does not drive the LCD yet. The 2.8C uses a 480 x 480 RGB panel
-path and Waveshare's demo stack rather than the Xiaozhi Ball GC9A01 SPI display
-path. The next porting step is to import only the required display/touch driver
-initialization from the official demo package, then reuse the FlightDesk radar
-renderer on that backend.
-
-## Build
+## Compilation et flash
 
 ```bash
 cd firmware/standalone-waveshare-2.8c
 cp include/secrets.example.h include/secrets.h
-# Fill secrets locally. Do not commit include/secrets.h.
-platformio run
+# Renseigner les identifiants Wi-Fi dans secrets.h, sans les publier.
+pio run -e waveshare_2_8c_bringup
+pio run -e waveshare_2_8c_bringup -t upload
+pio device monitor
 ```
 
-## Flash by USB
-
-Connect the `USB TO UART` Type-C port, then:
-
-```bash
-platformio run -t upload
-platformio device monitor
-```
-
-The monitor should show detected I2C devices, Wi-Fi status and free heap/PSRAM.
-
-## Next steps
-
-- Import the official Waveshare 2.8C display initialization.
-- Add the 480 x 480 FlightDesk radar renderer.
-- Add capacitive touch mapping and calibration.
-- Integrate the final audio hardware: INMP441 microphone, MAX98357A amplifier
-  and 40 mm speaker.
-- Add Gemini as an Internet service, not as a local model. The ESP32-S3 handles
-  the UI, audio capture/playback and HTTPS requests; Gemini runs in the cloud.
+Le portail Wi-Fi local `FlightDesk-Setup` permet aussi de configurer le réseau
+sur l'appareil. L'environnement `waveshare_2_8c_ota` peut ensuite servir aux
+mises à jour OTA lorsque l'appareil est joignable sur le réseau local.

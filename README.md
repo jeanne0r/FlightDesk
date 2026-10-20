@@ -59,10 +59,11 @@ cache/décodage doit être traité proprement sur ESP32 avant d'être fiable.
 Le port pour l'écran final reçu est isolé dans
 [`firmware/standalone-waveshare-2.8c`](firmware/standalone-waveshare-2.8c).
 
-La première cible est un bring-up matériel : USB série, Wi-Fi, profil
-Flash/PSRAM et scan I2C sur les broches Waveshare documentées. L'écran 480 ×
-480 et le tactile seront portés depuis le demo officiel Waveshare avant d'y
-remettre le radar FlightDesk complet.
+Cette cible pilote directement le panneau RGB 480 × 480 et le tactile GT911.
+Elle affiche un radar autonome inspiré du simulateur, récupère la carte et le
+trafic par Wi-Fi, et propose les réglages de rayon, de code postal et de mode
+nuit sur l'écran. Le port série ne sert qu'aux diagnostics. La mise au point
+visuelle finale nécessite encore une validation sur le matériel.
 
 ## Preview ESPHome Xiaozhi Ball V2
 

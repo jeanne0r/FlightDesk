@@ -21,10 +21,11 @@
 #include "secrets.example.h"
 #endif
 #include "embedded_map.h"
+#include "ui_font.h"
 
 namespace {
 
-constexpr const char* kBuildName = "FlightDesk Waveshare 2.8C LCD test";
+constexpr const char* kBuildName = "FlightDesk Waveshare 2.8C web UI port";
 constexpr int kWidth = 480;
 constexpr int kHeight = 480;
 
@@ -129,7 +130,8 @@ uint16_t dragLastY = 0;
 
 constexpr double kHomeLat = 46.5096;
 constexpr double kHomeLon = 6.3077;
-constexpr int kRangeKm = 50;
+int radarRangeKm = 50;
+bool nightMode = true;
 constexpr int kRadarCx = 240;
 constexpr int kRadarCy = 240;
 constexpr int kRadarRadius = 234;
@@ -713,13 +715,13 @@ uint16_t radarTint(uint16_t rgb) {
   const uint8_t g = ((rgb >> 5) & 0x3F) << 2;
   const uint8_t b = (rgb & 0x1F) << 3;
   const uint8_t lum = static_cast<uint8_t>((r * 30 + g * 59 + b * 11) / 100);
-  return rgb565(1 + lum / 42, 6 + lum / 10, 9 + lum / 13);
+  return rgb565(1 + lum / 48, 5 + lum / 9, 3 + lum / 24);
 }
 
 void clearMapFrame() {
   if (!mapFrame) return;
   for (int i = 0; i < kWidth * kHeight; ++i) {
-    mapFrame[i] = rgb565(0, 6, 8);
+    mapFrame[i] = rgb565(2, 5, 3);
   }
 }
 
@@ -821,7 +823,7 @@ void fetchMapTiles() {
   if (!mapFrame || !tileBuffer || WiFi.status() != WL_CONNECTED || mapFetchInProgress) return;
   mapFetchInProgress = true;
   clearMapFrame();
-  const int zoom = zoomForRange(radarLat, kRangeKm, kRadarRadius);
+  const int zoom = zoomForRange(radarLat, radarRangeKm, kRadarRadius);
   const double centerX = lonToPixelX(radarLon, zoom);
   const double centerY = latToPixelY(radarLat, zoom);
   const double topLeftX = centerX - kRadarCx;
@@ -935,11 +937,13 @@ int aircraftCount() {
 }
 
 int planeX(int index) {
-  return trafficLive && livePlaneCount > 0 ? livePlanes[index].x : fallbackPlane(index).x;
+  if (trafficLive && livePlaneCount > 0) return livePlanes[index].x;
+  return kRadarCx + (fallbackPlane(index).x - kRadarCx) * 50 / radarRangeKm;
 }
 
 int planeY(int index) {
-  return trafficLive && livePlaneCount > 0 ? livePlanes[index].y : fallbackPlane(index).y;
+  if (trafficLive && livePlaneCount > 0) return livePlanes[index].y;
+  return kRadarCy + (fallbackPlane(index).y - kRadarCy) * 50 / radarRangeKm;
 }
 
 int planeHeading(int index) {
@@ -970,11 +974,26 @@ int planeSpeedKmh(int index) {
   return trafficLive && livePlaneCount > 0 ? livePlanes[index].speedKmh : fallbackPlane(index).speedKmh;
 }
 
+bool planeVisible(int index) {
+  if (planeDistanceKm(index) > radarRangeKm) return false;
+  const int dx = planeX(index) - kRadarCx;
+  const int dy = planeY(index) - kRadarCy;
+  return dx * dx + dy * dy <= (kRadarRadius - 22) * (kRadarRadius - 22);
+}
+
+int visibleAircraftCount() {
+  int visible = 0;
+  for (int i = 0; i < aircraftCount(); ++i) {
+    if (planeVisible(i)) ++visible;
+  }
+  return visible;
+}
+
 bool updateLivePlanePosition(LivePlane& p) {
   const double dist = distanceKm(radarLat, radarLon, p.lat, p.lon);
-  if (dist > kRangeKm || dist < 0.1) return false;
+  if (dist > radarRangeKm || dist < 0.1) return false;
   const double bearing = bearingDeg(radarLat, radarLon, p.lat, p.lon);
-  const double posR = (dist / kRangeKm) * (kRadarRadius - 26);
+  const double posR = (dist / radarRangeKm) * (kRadarRadius - 26);
   p.x = kRadarCx + static_cast<int>(sin(bearing * DEG_TO_RAD) * posR);
   p.y = kRadarCy - static_cast<int>(cos(bearing * DEG_TO_RAD) * posR);
   p.distanceKm = static_cast<int>(round(dist));
@@ -1024,7 +1043,7 @@ void fetchTraffic() {
   }
 
   char url[2][144];
-  const int radiusNm = max(1, static_cast<int>(round(kRangeKm / 1.852)));
+  const int radiusNm = max(1, static_cast<int>(round(radarRangeKm / 1.852)));
   snprintf(url[0], sizeof(url[0]), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
            radarLat, radarLon, radiusNm);
   snprintf(url[1], sizeof(url[1]), "https://opendata.adsb.fi/api/v2/lat/%.5f/lon/%.5f/dist/%d",
@@ -1313,33 +1332,37 @@ uint8_t glyphRow(char c, int row) {
 }
 
 int textWidth(const char* text, int scale) {
-  int count = 0;
-  while (text[count]) ++count;
-  return count ? count * 6 * scale - scale : 0;
+  const UiGlyph* glyphs = scale >= 3 ? kUiGlyphs27 : (scale == 2 ? kUiGlyphs18 : kUiGlyphs12);
+  int width = 0;
+  for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c; ++c) {
+    const int index = *c >= 32 && *c <= 126 ? *c - 32 : '?' - 32;
+    UiGlyph glyph;
+    memcpy_P(&glyph, &glyphs[index], sizeof(glyph));
+    width += glyph.advance;
+  }
+  return width;
 }
 
 void drawText(int x, int y, const char* text, uint16_t color, int scale = 1) {
-  for (int i = 0; text[i]; ++i) {
-    for (int row = 0; row < 7; ++row) {
-      uint8_t bits = glyphRow(text[i], row);
-      for (int col = 0; col < 5; ++col) {
-        if (bits & (1 << (4 - col))) {
-          for (int yy = 0; yy < scale; ++yy) {
-            for (int xx = 0; xx < scale; ++xx) {
-              const int px = x + i * 6 * scale + col * scale + xx;
-              const int py = y + row * scale + yy;
-              if (scale <= 2) {
-                blendPixel(px - 1, py, color, 34);
-                blendPixel(px + 1, py, color, 34);
-                blendPixel(px, py - 1, color, 28);
-                blendPixel(px, py + 1, color, 28);
-              }
-              putPixel(px, py, color);
-            }
-          }
+  const UiGlyph* glyphs = scale >= 3 ? kUiGlyphs27 : (scale == 2 ? kUiGlyphs18 : kUiGlyphs12);
+  const uint8_t* pixels = scale >= 3 ? kUiPixels27 : (scale == 2 ? kUiPixels18 : kUiPixels12);
+  for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c; ++c) {
+    const int index = *c >= 32 && *c <= 126 ? *c - 32 : '?' - 32;
+    UiGlyph glyph;
+    memcpy_P(&glyph, &glyphs[index], sizeof(glyph));
+    for (int row = 0; row < glyph.height; ++row) {
+      for (int col = 0; col < glyph.width; ++col) {
+        const int pixel = row * glyph.width + col;
+        const uint8_t packed = pgm_read_byte(&pixels[glyph.offset + pixel / 2]);
+        const uint8_t level = pixel & 1 ? packed & 0x0F : packed >> 4;
+        if (level == 15) {
+          putPixel(x + glyph.x + col, y + glyph.y + row, color);
+        } else if (level) {
+          blendPixel(x + glyph.x + col, y + glyph.y + row, color, level * 17);
         }
       }
     }
+    x += glyph.advance;
   }
 }
 
@@ -1409,29 +1432,32 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   drawRoundRect(72, 96, 336, 276, 22, rgb565(62, 176, 98));
   if (appView == AppView::Settings) {
     drawTextCentered(240, 120, "REGLAGES", green, 2);
-    drawText(104, 150, "NPA", green, 2);
-    drawText(188, 150, "<", green, 2);
-    drawText(224, 150, currentPostal, text, 2);
-    drawText(292, 150, ">", green, 2);
-    drawTextCentered(250, 170, strcmp(currentPostal, "MANUEL") == 0 ? "MANUEL" : kPostalPresets[postalIndex].label, text, 1);
-    drawText(104, 178, "RAYON", green, 2);
-    drawText(214, 178, "50 KM", text, 2);
-    drawText(104, 206, "WIFI", green, 2);
-    drawText(214, 206, WiFi.status() == WL_CONNECTED ? "OK" : "KO", text, 2);
-    drawText(104, 234, "SOURCE", green, 2);
-    drawText(214, 234, trafficLive ? "LIVE" : "SIM", text, 2);
-    blendRoundRect(126, 260, 228, 34, 12, rgb565(1, 15, 12), 232);
-    drawRoundRect(126, 260, 228, 34, 12, rgb565(70, 220, 104));
-    drawTextCentered(240, 271, "WIFI SETUP", text, 1);
-    if (setupPortalActive) {
-      drawTextCentered(240, 302, "AP FLIGHTDESK-SETUP", green, 1);
-      drawTextCentered(240, 318, "192.168.4.1", text, 1);
-    } else {
-      drawTextCentered(240, 310, activeWifiSsid(), text, 1);
+    drawText(100, 151, "CODE POSTAL", text, 1);
+    drawText(166, 168, "<", green, 2);
+    drawTextCentered(240, 168, currentPostal, green, 2);
+    drawText(302, 168, ">", green, 2);
+    drawText(100, 199, "RAYON RADAR", text, 1);
+    constexpr int ranges[] = {20, 50, 100, 250};
+    for (int i = 0; i < 4; ++i) {
+      const int x = 100 + i * 72;
+      const bool active = radarRangeKm == ranges[i];
+      fillRoundRect(x, 214, 64, 34, 11, active ? rgb565(19, 63, 30) : rgb565(14, 19, 16));
+      drawRoundRect(x, 214, 64, 34, 11, active ? green : rgb565(55, 75, 58));
+      char range[5];
+      snprintf(range, sizeof(range), "%d", ranges[i]);
+      drawTextCentered(x + 32, 225, range, active ? green : text, 1);
     }
-    blendRoundRect(144, 334, 192, 30, 12, rgb565(1, 15, 12), 232);
-    drawRoundRect(144, 334, 192, 30, 12, rgb565(70, 220, 104));
-    drawTextCentered(240, 345, "FERMER", text, 1);
+    drawText(100, 265, "MODE NUIT", text, 1);
+    fillRoundRect(292, 257, 72, 30, 14, nightMode ? rgb565(40, 132, 57) : rgb565(26, 34, 28));
+    drawRoundRect(292, 257, 72, 30, 14, green);
+    drawTextCentered(328, 267, nightMode ? "ON" : "OFF", nightMode ? rgb565(2, 13, 5) : text, 1);
+    fillRoundRect(100, 296, 128, 30, 10, rgb565(12, 26, 16));
+    drawRoundRect(100, 296, 128, 30, 10, green);
+    drawTextCentered(164, 306, "WIFI SETUP", text, 1);
+    fillRoundRect(252, 296, 112, 30, 10, rgb565(12, 26, 16));
+    drawRoundRect(252, 296, 112, 30, 10, green);
+    drawTextCentered(308, 306, "FERMER", text, 1);
+    drawTextCentered(240, 344, WiFi.status() == WL_CONNECTED ? activeWifiSsid() : "WIFI HORS LIGNE", text, 1);
     return;
   }
 
@@ -1500,7 +1526,7 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
   const char* labels[] = {"RADAR", "RECH", "FAV", "REGL", "IA"};
   constexpr int width = 50;
-  constexpr int height = 28;
+  constexpr int height = 32;
   constexpr int gap = 6;
   constexpr int startX = 101;
   constexpr int y = 356;
@@ -1601,10 +1627,10 @@ void buildRadarBaseFrame() {
   constexpr int cx = kRadarCx;
   constexpr int cy = kRadarCy;
   constexpr int r = kRadarRadius;
-  const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(108, 255, 170);
-  const uint16_t softGreen = rgb565(48, 205, 146);
-  const uint16_t dim = rgb565(9, 54, 56);
+  const uint16_t black = rgb565(2, 5, 3);
+  const uint16_t green = rgb565(141, 255, 111);
+  const uint16_t softGreen = rgb565(82, 224, 121);
+  const uint16_t dim = rgb565(27, 75, 37);
 
   for (int y = 0; y < kHeight; ++y) {
     for (int x = 0; x < kWidth; ++x) {
@@ -1614,14 +1640,13 @@ void buildRadarBaseFrame() {
       if (d2 > r * r) {
         frame[y * kWidth + x] = black;
       } else {
-        const uint8_t shade = d2 < 120 * 120 ? 14 : (d2 < 190 * 190 ? 10 : 7);
-        const uint8_t blue = d2 < 160 * 160 ? 20 : 15;
-        frame[y * kWidth + x] = rgb565(1, shade, blue);
+        const uint8_t shade = d2 < 120 * 120 ? 16 : (d2 < 190 * 190 ? 12 : 7);
+        frame[y * kWidth + x] = rgb565(2, shade, 5);
       }
     }
   }
 
-  fillCircle(cx, cy, r - 8, rgb565(1, 9, 12));
+  fillCircle(cx, cy, r - 8, rgb565(2, 8, 4));
   if (!mapReady) {
     blendEmbeddedMap(92);
   }
@@ -1632,14 +1657,14 @@ void buildRadarBaseFrame() {
         const int dy = y - cy;
         if (dx * dx + dy * dy <= (r - 4) * (r - 4)) {
           const int index = y * kWidth + x;
-          frame[index] = blend565(frame[index], mapFrame[index], 58);
+          frame[index] = blend565(frame[index], mapFrame[index], 104);
         }
       }
     }
   }
-  blendFillCircle(cx, cy, r - 8, rgb565(0, 4, 6), 86);
-  blendFillCircle(cx, cy, r - 24, rgb565(7, 42, 38), 20);
-  blendFillCircle(cx, cy, r / 2, rgb565(8, 54, 42), 9);
+  blendFillCircle(cx, cy, r - 8, rgb565(1, 4, 2), nightMode ? 75 : 42);
+  blendFillCircle(cx, cy, r - 24, rgb565(18, 73, 28), 20);
+  blendFillCircle(cx, cy, r / 2, rgb565(24, 112, 43), 11);
 
   drawCircle(cx, cy, r, green);
   blendCircle(cx, cy, r - 1, green, 140);
@@ -1668,13 +1693,13 @@ void drawRadarFrame() {
   constexpr int cx = kRadarCx;
   constexpr int cy = kRadarCy;
   constexpr int r = kRadarRadius;
-  const uint16_t black = rgb565(0, 2, 3);
-  const uint16_t green = rgb565(108, 255, 170);
-  const uint16_t softGreen = rgb565(48, 205, 146);
-  const uint16_t glow = rgb565(18, 165, 110);
-  const uint16_t dim = rgb565(9, 54, 56);
-  const uint16_t panel = rgb565(1, 11, 10);
-  const uint16_t text = rgb565(225, 244, 228);
+  const uint16_t black = rgb565(2, 5, 3);
+  const uint16_t green = rgb565(141, 255, 111);
+  const uint16_t softGreen = rgb565(82, 224, 121);
+  const uint16_t glow = rgb565(82, 224, 121);
+  const uint16_t dim = rgb565(27, 75, 37);
+  const uint16_t panel = rgb565(4, 10, 6);
+  const uint16_t text = rgb565(238, 244, 239);
 
   if (!radarBaseFrame || radarBaseDirty) {
     buildRadarBaseFrame();
@@ -1685,7 +1710,7 @@ void drawRadarFrame() {
     fillCircle(cx, cy, r, black);
   }
 
-  blendRadarSweep(cx, cy, r - 14, sweepDeg, rgb565(22, 245, 178));
+  blendRadarSweep(cx, cy, r - 14, sweepDeg, softGreen);
   const float sweepRad = sweepDeg * DEG_TO_RAD;
   blendLine(cx, cy,
             cx + static_cast<int>(cosf(sweepRad) * (r - 10)),
@@ -1698,6 +1723,7 @@ void drawRadarFrame() {
 
   const int count = aircraftCount();
   for (int planeIndex = 0; planeIndex < count; ++planeIndex) {
+    if (!planeVisible(planeIndex)) continue;
     const float ar = planeHeading(planeIndex) * DEG_TO_RAD;
     const int x = planeX(planeIndex);
     const int y = planeY(planeIndex);
@@ -1714,24 +1740,34 @@ void drawRadarFrame() {
     blendFillCircle(x, y, planeIndex == selectedPlane ? 19 : 13, glow, planeIndex == selectedPlane ? 46 : 20);
     blendFillCircle(x, y, planeIndex == selectedPlane ? 14 : 9, green, planeIndex == selectedPlane ? 28 : 12);
     fillTriangle(noseX + 1, noseY + 1, leftX + 1, leftY + 1, rightX + 1, rightY + 1, rgb565(0, 8, 6));
-    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, rgb565(205, 255, 202));
+    fillTriangle(noseX, noseY, leftX, leftY, rightX, rightY, green);
     drawLine(noseX, noseY, leftX, leftY, green);
     drawLine(noseX, noseY, rightX, rightY, green);
   }
 
   char countText[12];
-  snprintf(countText, sizeof(countText), "%d", count);
+  snprintf(countText, sizeof(countText), "%d", visibleAircraftCount());
   drawTextCentered(cx, 48, "18:47", text, 1);
   drawTextCentered(cx, 67, trafficLive ? "LIVE AIRPLANES" : "TRAFIC SIMULE", softGreen, 1);
   drawTextCentered(cx, 90, countText, green, 2);
   drawTextCentered(cx, 116, "AVIONS", green, 2);
-  drawText(cx + r * 41 / 100, cy + 3, "20", softGreen, 1);
-  drawText(cx + r * 72 / 100, cy + 3, "50", softGreen, 1);
+  char innerRange[8];
+  char outerRange[8];
+  snprintf(innerRange, sizeof(innerRange), "%d", radarRangeKm * 2 / 5);
+  snprintf(outerRange, sizeof(outerRange), "%d", radarRangeKm);
+  drawText(cx + r * 41 / 100, cy + 3, innerRange, softGreen, 1);
+  drawText(cx + r * 72 / 100, cy + 3, outerRange, softGreen, 1);
   drawText(cx + r * 73 / 100, cy + 20, "KM", softGreen, 1);
 
   fillCircle(cx, cy, 9, black);
   drawCircle(cx, cy, 10, green);
   drawCircle(cx, cy, 16, dim);
+
+  if (appView == AppView::Radar && selectedPlane < 0) {
+    fillRoundRect(48, 58, 44, 42, 13, panel);
+    drawRoundRect(48, 58, 44, 42, 13, green);
+    drawTextCentered(70, 73, "H", green, 2);
+  }
 
   if (appView != AppView::Radar) {
     drawMenuPanel(green, text, panel);
@@ -1745,7 +1781,7 @@ void drawRadarFrame() {
     drawCircle(lastTouchX, lastTouchY, 16, rgb565(120, 255, 130));
   }
 
-  if (!gt911Ok || !qmiOk) {
+  if (!gt911Ok) {
     drawDiagnostics(green, text, panel);
   }
 
@@ -1938,6 +1974,10 @@ void loadLocationSettings() {
   const String npa = prefs.getString("npa", "1188");
   const double lat = prefs.getDouble("lat", kHomeLat);
   const double lon = prefs.getDouble("lon", kHomeLon);
+  const int savedRange = prefs.getInt("range", 50);
+  radarRangeKm = (savedRange == 20 || savedRange == 50 || savedRange == 100 || savedRange == 250)
+                     ? savedRange : 50;
+  nightMode = prefs.getBool("night", true);
   prefs.end();
 
   int preset = 0;
@@ -2151,6 +2191,24 @@ void invalidateLiveData() {
   radarBaseDirty = true;
 }
 
+void setRadarRange(int rangeKm) {
+  if (rangeKm != 20 && rangeKm != 50 && rangeKm != 100 && rangeKm != 250) return;
+  if (radarRangeKm == rangeKm) return;
+  radarRangeKm = rangeKm;
+  if (prefs.begin("flightdesk", false)) {
+    prefs.putInt("range", radarRangeKm);
+    prefs.end();
+  }
+  invalidateLiveData();
+  Serial.printf("[RADAR] Rayon %d km\n", radarRangeKm);
+}
+
+void recenterMap() {
+  applyPostalIndex(postalIndex);
+  saveLocationSettings();
+  invalidateLiveData();
+}
+
 void shiftMapFrame(int dx, int dy) {
   if (!mapFrame || !mapReady || (dx == 0 && dy == 0)) return;
   const uint16_t bg = rgb565(0, 6, 8);
@@ -2173,7 +2231,7 @@ void shiftMapFrame(int dx, int dy) {
 
 void moveMapByPixels(int dx, int dy) {
   if (dx == 0 && dy == 0) return;
-  const double metersPerPixel = (kRangeKm * 1000.0) / max(1, kRadarRadius);
+  const double metersPerPixel = (radarRangeKm * 1000.0) / max(1, kRadarRadius);
   const double metersEast = -dx * metersPerPixel;
   const double metersNorth = dy * metersPerPixel;
   const double latMeters = 111320.0;
@@ -2197,6 +2255,7 @@ int nearestPlaneAt(uint16_t x, uint16_t y) {
   int best = -1;
   int bestD2 = 34 * 34;
   for (int i = 0; i < aircraftCount(); ++i) {
+    if (!planeVisible(i)) continue;
     const int dx = static_cast<int>(x) - planeX(i);
     const int dy = static_cast<int>(y) - planeY(i);
     const int d2 = dx * dx + dy * dy;
@@ -2215,22 +2274,29 @@ void handleTap(uint16_t x, uint16_t y) {
   Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
 
   if (appView != AppView::Radar) {
-    if (appView == AppView::Settings && inRect(x, y, 162, 136, 64, 50)) {
-      changePostal(-1);
-      return;
-    }
-    if (appView == AppView::Settings && inRect(x, y, 274, 136, 64, 50)) {
-      changePostal(1);
-      return;
-    }
-    if (appView == AppView::Settings && inRect(x, y, 116, 248, 248, 58)) {
-      startWifiPortal();
-      return;
-    }
-    if (appView == AppView::Settings && inRect(x, y, 118, 324, 244, 58)) {
-      appView = AppView::Radar;
-      selectedPlane = -1;
-      return;
+    if (appView == AppView::Settings) {
+      if (inRect(x, y, 150, 159, 45, 34)) { changePostal(-1); return; }
+      if (inRect(x, y, 285, 159, 45, 34)) { changePostal(1); return; }
+      if (inRect(x, y, 100, 210, 280, 44)) {
+        constexpr int ranges[] = {20, 50, 100, 250};
+        const int index = (x - 100) / 72;
+        if (index < 4) setRadarRange(ranges[index]);
+        return;
+      }
+      if (inRect(x, y, 284, 251, 88, 44)) {
+        nightMode = !nightMode;
+        radarBaseDirty = true;
+        if (prefs.begin("flightdesk", false)) {
+          prefs.putBool("night", nightMode);
+          prefs.end();
+        }
+        return;
+      }
+      if (inRect(x, y, 96, 290, 138, 44)) { startWifiPortal(); return; }
+      if (inRect(x, y, 246, 290, 128, 44)) {
+        appView = AppView::Radar;
+        return;
+      }
     }
     if (appView != AppView::Settings &&
         (inRect(x, y, 130, 292, 220, 68) || inRect(x, y, 88, 348, 304, 56))) {
@@ -2248,6 +2314,11 @@ void handleTap(uint16_t x, uint16_t y) {
     if (!inRect(x, y, 52, 124, 376, 214)) {
       selectedPlane = -1;
     }
+    return;
+  }
+
+  if (inRect(x, y, 44, 54, 52, 50)) {
+    recenterMap();
     return;
   }
 
