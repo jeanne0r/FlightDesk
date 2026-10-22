@@ -33,7 +33,20 @@ de l'API. Les symboles avancent entre deux réponses selon leur cap et leur vite
 Une carte embarquée sert de repli ; les avions de démonstration ne
 s'affichent que sans Wi-Fi. La barre du radar contient HOME, REGL et IA ;
 HOME recentre la carte. La page Assistant reste une maquette limitée :
-la saisie texte et audio n'est pas encore portée.
+la saisie texte et audio n'est pas encore portée. Elle permet maintenant de
+configurer une clé Gemini et de tester directement la connexion depuis l'ESP32.
+
+## Configuration Gemini
+
+Depuis l'écran, ouvrir **IA → CONFIG**. Se connecter au réseau
+`FlightDesk-Setup` avec le mot de passe affiché, puis ouvrir
+`http://192.168.4.1/ai` sur le téléphone. La clé API est enregistrée dans la
+mémoire NVS de l'appareil, sans passer par le simulateur. Après enregistrement,
+l'ESP32 appelle `gemini-3.5-flash-lite` pour vérifier l'accès au modèle. Le
+bouton **TEST** relance cette vérification. La page et `/status` affichent le
+résultat sans révéler la clé. Le certificat HTTPS de Gemini est vérifié avec
+les racines Google Trust Services ; l'écran synchronise son horloge avant le
+test. Le portail Wi-Fi dispose d'un mot de passe propre à chaque appareil.
 
 ## Compilation et flash
 
@@ -47,7 +60,8 @@ pio device monitor
 ```
 
 Le portail Wi-Fi local `FlightDesk-Setup` permet aussi de configurer le réseau
-sur l'appareil. L'environnement `waveshare_2_8c_ota` peut ensuite servir aux
+sur l'appareil. Son mot de passe apparaît sur l'écran après avoir touché
+**RÉGL → WIFI SETUP**. L'environnement `waveshare_2_8c_ota` peut ensuite servir aux
 mises à jour OTA lorsque l'appareil est joignable sur le réseau local.
 
 Pour contrôler un appareil sur le LAN sans exposer les identifiants Wi-Fi :

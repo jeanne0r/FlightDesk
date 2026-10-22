@@ -21,6 +21,7 @@
 #include "secrets.example.h"
 #endif
 #include "embedded_map.h"
+#include "google_roots.h"
 #include "photo_decode.h"
 #include "ui_font.h"
 
@@ -82,6 +83,14 @@ WebServer statusServer(8081);
 char lastDetailStatus[72] = "aucune requete";
 int lastPhotoHttpCode = 0;
 char lastPhotoStatus[120] = "aucune photo";
+char storedGeminiKey[128] = "";
+char setupApPassword[13] = "";
+char geminiStatus[64] = "CLE ABSENTE";
+int lastGeminiHttpCode = 0;
+bool geminiTlsOk = false;
+volatile bool geminiTestRequested = false;
+volatile bool geminiTestInProgress = false;
+TaskHandle_t geminiTaskHandle = nullptr;
 
 uint32_t lastStatusMs = 0;
 uint32_t lastI2cScanMs = 0;
@@ -1792,16 +1801,32 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
     fillRoundRect(252, 296, 112, 30, 10, rgb565(12, 26, 16));
     drawRoundRect(252, 296, 112, 30, 10, green);
     drawTextCentered(308, 306, "FERMER", text, 1);
-    drawTextCentered(240, 344, WiFi.status() == WL_CONNECTED ? activeWifiSsid() : "WIFI HORS LIGNE", text, 1);
+    if (setupPortalActive) {
+      drawTextCentered(240, 337, "FlightDesk-Setup  192.168.4.1", text, 1);
+      drawTextCentered(240, 352, setupApPassword, green, 1);
+    } else {
+      drawTextCentered(240, 344, WiFi.status() == WL_CONNECTED ? activeWifiSsid() : "WIFI HORS LIGNE", text, 1);
+    }
     return;
   }
 
   drawTextCentered(240, 122, "ASSISTANT IA", green, 2);
-  drawText(112, 168, "Version simple", text, 2);
-  drawText(112, 198, "sans audio ici.", text, 2);
-  blendRoundRect(144, 304, 192, 42, 14, rgb565(1, 15, 12), 232);
-  drawRoundRect(144, 304, 192, 42, 14, rgb565(70, 220, 104));
-  drawTextCentered(240, 317, "FERMER", text, 2);
+  drawTextCentered(240, 164, geminiStatus, text, 1);
+  drawTextCentered(240, 188, "Gemini 3.5 Flash-Lite", green, 1);
+  if (setupPortalActive) {
+    drawTextCentered(240, 222, "FlightDesk-Setup", text, 1);
+    drawTextCentered(240, 241, setupApPassword, green, 1);
+    drawTextCentered(240, 260, "192.168.4.1/ai", text, 1);
+  } else {
+    drawTextCentered(240, 241, "CONFIG ouvre le Wi-Fi local", text, 1);
+  }
+  constexpr int buttonX[] = {94, 192, 290};
+  const char* labels[] = {"CONFIG", "TEST", "FERMER"};
+  for (int i = 0; i < 3; ++i) {
+    fillRoundRect(buttonX[i], 304, 92, 42, 12, rgb565(12, 26, 16));
+    drawRoundRect(buttonX[i], 304, 92, 42, 12, green);
+    drawTextCentered(buttonX[i] + 46, 317, labels[i], text, 1);
+  }
 }
 
 void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
@@ -2260,9 +2285,21 @@ void loadWifiSettings() {
   }
   const String ssid = prefs.getString("ssid", "");
   const String password = prefs.getString("pass", "");
+  const String geminiKey = prefs.getString("gemini_key", FLIGHTDESK_GEMINI_API_KEY);
+  const String apPassword = prefs.getString("ap_pass", "");
   prefs.end();
   copyClean(storedSsid, sizeof(storedSsid), ssid.c_str(), "");
   copyClean(storedPassword, sizeof(storedPassword), password.c_str(), "");
+  copyClean(storedGeminiKey, sizeof(storedGeminiKey), geminiKey.c_str(), "");
+  copyClean(setupApPassword, sizeof(setupApPassword), apPassword.c_str(), "");
+  if (storedGeminiKey[0]) copyClean(geminiStatus, sizeof(geminiStatus), "PRET A TESTER", "");
+  if (strlen(setupApPassword) < 8 && prefs.begin("flightdesk", false)) {
+    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    for (int i = 0; i < 12; ++i) setupApPassword[i] = alphabet[esp_random() % (sizeof(alphabet) - 1)];
+    setupApPassword[12] = '\0';
+    prefs.putString("ap_pass", setupApPassword);
+    prefs.end();
+  }
 }
 
 const char* activeWifiSsid() {
@@ -2271,6 +2308,72 @@ const char* activeWifiSsid() {
 
 const char* activeWifiPassword() {
   return strlen(storedSsid) ? storedPassword : FLIGHTDESK_WIFI_PASSWORD;
+}
+
+void testGeminiConnection() {
+  geminiTlsOk = false;
+  lastGeminiHttpCode = 0;
+  if (WiFi.status() != WL_CONNECTED) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "WIFI HORS LIGNE", "");
+    return;
+  }
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  const uint32_t started = millis();
+  while (time(nullptr) < 1700000000 && millis() - started < 12000) delay(250);
+  if (time(nullptr) < 1700000000) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "HORLOGE INDISPONIBLE", "");
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setCACert(kGoogleRoots);
+  HTTPClient http;
+  http.setTimeout(12000);
+  const bool hasKey = storedGeminiKey[0] != '\0';
+  const char* url = hasKey
+      ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
+      : "https://generativelanguage.googleapis.com/v1beta/models";
+  if (!http.begin(client, url)) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "CONNEXION IMPOSSIBLE", "");
+    return;
+  }
+  int code;
+  if (hasKey) {
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("x-goog-api-key", storedGeminiKey);
+    code = http.POST("{\"contents\":[{\"parts\":[{\"text\":\"Reponds uniquement OK.\"}]}],\"generationConfig\":{\"maxOutputTokens\":64}}");
+  } else {
+    code = http.GET();
+  }
+  lastGeminiHttpCode = code;
+  geminiTlsOk = code > 0;
+  if (!hasKey) {
+    copyClean(geminiStatus, sizeof(geminiStatus),
+              geminiTlsOk ? "RESEAU OK - CLE ABSENTE" : "TLS OU RESEAU KO", "");
+  } else if (code == HTTP_CODE_OK) {
+    JsonDocument doc;
+    const String response = http.getString();
+    const DeserializationError error = deserializeJson(doc, response);
+    const char* answer = doc["candidates"][0]["content"]["parts"][0]["text"] | "";
+    copyClean(geminiStatus, sizeof(geminiStatus),
+              !error && answer[0] ? "CONNEXION GEMINI OK" : "REPONSE GEMINI VIDE", "");
+  } else if (code == 400 || code == 401 || code == 403) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "CLE REFUSEE", "");
+  } else if (code == 404) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "MODELE INDISPONIBLE", "");
+  } else if (code == 429) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "QUOTA DEPASSE", "");
+  } else {
+    copyClean(geminiStatus, sizeof(geminiStatus), "SERVICE INDISPONIBLE", "");
+  }
+  http.end();
+  Serial.printf("[GEMINI] test HTTP=%d tls=%d status=%s\n", code, geminiTlsOk, geminiStatus);
+}
+
+void requestGeminiTest() {
+  if (geminiTestRequested || geminiTestInProgress) return;
+  copyClean(geminiStatus, sizeof(geminiStatus), "TEST EN COURS", "");
+  geminiTestRequested = true;
 }
 
 void saveLocationSettings() {
@@ -2340,8 +2443,56 @@ void handleSetupRoot() {
   html += htmlEscape(activeWifiSsid());
   html += F("' autofocus><label>Mot de passe</label><input name='pass' type='password' maxlength='64' placeholder='laisser vide pour garder'>");
   html += F("<button type='submit'>Enregistrer</button></form>");
-  html += F("<p>Apres sauvegarde, FlightDesk reconnecte le radar avec ces identifiants.</p></main></body></html>");
+  html += F("<p>Apres sauvegarde, FlightDesk reconnecte le radar avec ces identifiants.</p>");
+  html += F("<p><a href='/ai' style='color:#86ff78'>Configurer Gemini</a></p></main></body></html>");
   setupServer.send(200, "text/html", html);
+}
+
+void handleGeminiRoot() {
+  String html;
+  html.reserve(1900);
+  html += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>FlightDesk Gemini</title><style>body{margin:0;background:#050b08;color:#eaffea;font-family:system-ui}");
+  html += F("main{max-width:420px;margin:auto;padding:28px}h1{color:#86ff78}p{line-height:1.5}");
+  html += F("input,button{box-sizing:border-box;width:100%;padding:14px;margin:8px 0;border-radius:10px;font-size:18px}");
+  html += F("input{background:#07130d;border:1px solid #245a38;color:white}button{border:0;background:#58f07b;color:#031009;font-weight:bold}");
+  html += F("a{color:#86ff78}</style></head><body><main><h1>Gemini</h1><p>Cle API : ");
+  html += storedGeminiKey[0] ? F("enregistree") : F("absente");
+  html += F("</p><p>Diagnostic : ");
+  html += htmlEscape(geminiStatus);
+  html += F("</p><form method='post' action='/ai/save'><label>Cle API Gemini</label>");
+  html += F("<input name='key' type='password' minlength='20' maxlength='127' autocomplete='off' required>");
+  html += F("<button type='submit'>Enregistrer et tester</button></form>");
+  html += F("<form method='post' action='/ai/test'><button type='submit'>Retester la connexion</button></form>");
+  html += F("<p><a href='/'>Configuration Wi-Fi</a></p></main></body></html>");
+  setupServer.sendHeader("Cache-Control", "no-store");
+  setupServer.send(200, "text/html", html);
+}
+
+void handleGeminiSave() {
+  String key = setupServer.arg("key");
+  key.trim();
+  if (key.length() < 20 || key.length() >= sizeof(storedGeminiKey) || key.indexOf(' ') >= 0) {
+    setupServer.send(400, "text/plain", "Cle invalide");
+    return;
+  }
+  if (!prefs.begin("flightdesk", false)) {
+    setupServer.send(500, "text/plain", "NVS KO");
+    return;
+  }
+  prefs.putString("gemini_key", key);
+  prefs.end();
+  copyClean(storedGeminiKey, sizeof(storedGeminiKey), key.c_str(), "");
+  key = "";
+  requestGeminiTest();
+  setupServer.sendHeader("Location", "/ai");
+  setupServer.send(303, "text/plain", "");
+}
+
+void handleGeminiTest() {
+  requestGeminiTest();
+  setupServer.sendHeader("Location", "/ai");
+  setupServer.send(303, "text/plain", "");
 }
 
 void handleStatus() {
@@ -2385,6 +2536,10 @@ void handleStatus() {
   doc["detail_status"] = lastDetailStatus;
   doc["photo_http_code"] = lastPhotoHttpCode;
   doc["photo_status"] = lastPhotoStatus;
+  doc["gemini_key_configured"] = storedGeminiKey[0] != '\0';
+  doc["gemini_status"] = geminiStatus;
+  doc["gemini_http_code"] = lastGeminiHttpCode;
+  doc["gemini_tls_ok"] = geminiTlsOk;
   if (selectedPlane >= 0 && trafficLive && selectedPlane < livePlaneCount) {
     const LivePlane& p = livePlanes[selectedPlane];
     doc["selected"]["hex"] = p.hex;
@@ -2427,9 +2582,12 @@ void handleSetupSave() {
 void startWifiPortal() {
   if (setupPortalActive) return;
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP("FlightDesk-Setup");
+  WiFi.softAP("FlightDesk-Setup", setupApPassword);
   setupServer.on("/", HTTP_GET, handleSetupRoot);
   setupServer.on("/save", HTTP_POST, handleSetupSave);
+  setupServer.on("/ai", HTTP_GET, handleGeminiRoot);
+  setupServer.on("/ai/save", HTTP_POST, handleGeminiSave);
+  setupServer.on("/ai/test", HTTP_POST, handleGeminiTest);
   setupServer.onNotFound(handleSetupRoot);
   setupServer.begin();
   setupPortalActive = true;
@@ -2740,6 +2898,12 @@ void handleTap(uint16_t x, uint16_t y) {
   Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
 
   if (appView != AppView::Radar) {
+    if (appView == AppView::Assistant) {
+      if (inRect(x, y, 94, 298, 92, 54)) { startWifiPortal(); return; }
+      if (inRect(x, y, 192, 298, 92, 54)) { requestGeminiTest(); return; }
+      if (inRect(x, y, 290, 298, 92, 54)) { appView = AppView::Radar; return; }
+      return;
+    }
     if (appView == AppView::Settings) {
       if (postalKeyboardOpen) {
         handlePostalKeyboardTap(x, y);
@@ -2897,6 +3061,24 @@ void enrichTask(void*) {
   }
 }
 
+void geminiTestTask(void*) {
+  for (;;) {
+    if (geminiTestRequested && !geminiTestInProgress) {
+      geminiTestRequested = false;
+      geminiTestInProgress = true;
+      testGeminiConnection();
+      geminiTestInProgress = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
+void startGeminiTask() {
+  if (geminiTaskHandle != nullptr) return;
+  xTaskCreatePinnedToCore(geminiTestTask, "flightdesk-gemini", 12288, nullptr,
+                          1, &geminiTaskHandle, 0);
+}
+
 void startTrafficTask() {
   if (trafficTaskHandle != nullptr) return;
   xTaskCreatePinnedToCore(trafficFetchTask,
@@ -2984,6 +3166,8 @@ void setup() {
   startTrafficTask();
   startMapTask();
   startEnrichTask();
+  startGeminiTask();
+  requestGeminiTest();
   bootMs = millis();
   printStatus();
 }
