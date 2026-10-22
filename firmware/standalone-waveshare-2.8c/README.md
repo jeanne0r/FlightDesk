@@ -37,9 +37,12 @@ la saisie texte et audio n'est pas encore portée. Elle permet maintenant de
 configurer une clé Gemini et de tester directement la connexion depuis l'ESP32.
 La fiche d'un avion comporte un bouton **DÉTAILS** : il demande à Gemini deux
 anecdotes courtes à partir du type et des autres données connues, puis les affiche
-sur l'écran. Le menu du radar comprend aussi **GAG NUL**, qui demande une blague
-sur l'aviation à Gemini, et **MÉTÉO**, qui affiche les conditions actuelles au
-centre de la carte grâce à Open-Meteo.
+sur l'écran. Le bouton **ENCORE** demande deux nouvelles anecdotes sur le même avion.
+Le menu du radar comprend aussi **GAG NUL**, qui demande une blague
+sur l'aviation à Gemini, fournit les huit dernières en contexte et rejette les
+doublons parmi les 128 dernières blagues affichées, même après redémarrage,
+et **MÉTÉO**, qui affiche les conditions actuelles et
+les prévisions des trois prochains jours au centre de la carte grâce à Open-Meteo.
 
 ## Configuration Gemini
 

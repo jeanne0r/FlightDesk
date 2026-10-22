@@ -299,6 +299,7 @@ struct AnecdoteRequest {
 AnecdoteRequest pendingAnecdote = {};
 char anecdoteCallsign[12] = "";
 char anecdoteAnswer[512] = "";
+char previousAnecdote[512] = "";
 char anecdoteStatus[48] = "";
 bool anecdoteOpen = false;
 volatile bool anecdoteRequested = false;
@@ -306,6 +307,13 @@ volatile bool anecdoteInProgress = false;
 int lastAnecdoteHttpCode = 0;
 char jokeAnswer[512] = "";
 char jokeStatus[48] = "";
+constexpr int kJokeHistorySize = 8;
+char jokeHistory[kJokeHistorySize][512] = {};
+int jokeHistoryCount = 0;
+constexpr int kJokeFingerprintCount = 128;
+uint64_t jokeFingerprints[kJokeFingerprintCount] = {};
+int jokeFingerprintUsed = 0;
+int jokeFingerprintNext = 0;
 volatile bool jokeRequested = false;
 volatile bool jokeInProgress = false;
 int lastJokeHttpCode = 0;
@@ -318,6 +326,15 @@ float weatherTemperatureC = 0;
 float weatherWindKmh = 0;
 int weatherHumidity = 0;
 int weatherCode = -1;
+struct WeatherForecastDay {
+  char date[6];
+  int code;
+  float highC;
+  float lowC;
+  int rainPercent;
+};
+WeatherForecastDay weatherForecast[3] = {};
+int weatherForecastCount = 0;
 int lastWeatherHttpCode = 0;
 
 enum class AppView : uint8_t {
@@ -1913,20 +1930,32 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   }
 
   if (appView == AppView::Weather) {
-    drawTextCentered(240, 120, "METEO LOCALE", green, 2);
+    drawTextCentered(240, 112, "METEO LOCALE", green, 2);
     if (weatherCode >= 0) {
       char line[48];
       snprintf(line, sizeof(line), "%.1f C", weatherTemperatureC);
-      drawTextCentered(240, 163, line, green, 3);
-      drawTextCentered(240, 204, weatherCodeLabel(weatherCode), text, 1);
-      snprintf(line, sizeof(line), "HUMIDITE %d %%", weatherHumidity);
-      drawTextCentered(240, 231, line, text, 1);
-      snprintf(line, sizeof(line), "VENT %.0f KM/H", weatherWindKmh);
-      drawTextCentered(240, 253, line, text, 1);
+      drawTextCentered(240, 143, line, green, 2);
+      drawTextCentered(240, 171, weatherCodeLabel(weatherCode), text, 1);
+      snprintf(line, sizeof(line), "HUM %d %%   VENT %.0f KM/H", weatherHumidity, weatherWindKmh);
+      drawTextCentered(240, 191, line, text, 0);
+      drawTextCentered(240, 213, "PREVISIONS 3 JOURS", green, 1);
+      if (weatherForecastCount == 0) {
+        drawTextCentered(240, 246, "PREVISIONS INDISPONIBLES", text, 0);
+      }
+      for (int i = 0; i < weatherForecastCount; ++i) {
+        const WeatherForecastDay& day = weatherForecast[i];
+        const int y = 237 + i * 19;
+        drawText(91, y, day.date, green, 0);
+        drawText(138, y, weatherCodeLabel(day.code), text, 0);
+        snprintf(line, sizeof(line), "%.0f/%.0f C", day.highC, day.lowC);
+        drawText(272, y, line, text, 0);
+        snprintf(line, sizeof(line), "%d%%", day.rainPercent);
+        drawText(355, y, line, green, 0);
+      }
     } else {
       drawTextCentered(240, 201, weatherStatus, text, 1);
     }
-    drawTextCentered(240, 278, "Source: Open-Meteo", green, 0);
+    drawTextCentered(240, 286, "Source: Open-Meteo", green, 0);
     fillRoundRect(100, 304, 128, 36, 10, rgb565(12, 26, 16));
     drawRoundRect(100, 304, 128, 36, 10, green);
     drawTextCentered(164, 315, "ACTUALISER", text, 1);
@@ -2026,9 +2055,12 @@ void drawAircraftAnecdote(uint16_t green, uint16_t text) {
   else if (anecdoteInProgress || anecdoteRequested) {
     drawTextCentered(240, 225, "Recherche en cours...", text, 1);
   }
-  fillRoundRect(160, 353, 160, 32, 10, rgb565(12, 26, 16));
-  drawRoundRect(160, 353, 160, 32, 10, green);
-  drawTextCentered(240, 362, "RETOUR", text, 1);
+  fillRoundRect(76, 353, 148, 32, 10, rgb565(12, 26, 16));
+  drawRoundRect(76, 353, 148, 32, 10, green);
+  drawTextCentered(150, 362, "ENCORE", text, 1);
+  fillRoundRect(256, 353, 148, 32, 10, rgb565(12, 26, 16));
+  drawRoundRect(256, 353, 148, 32, 10, green);
+  drawTextCentered(330, 362, "RETOUR", text, 1);
 }
 
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
@@ -2454,6 +2486,78 @@ void loadWifiSettings() {
   }
 }
 
+uint64_t jokeFingerprint(const char* joke) {
+  uint64_t hash = 14695981039346656037ULL;
+  for (const char* p = joke; *p; ++p) {
+    char c = *p;
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) continue;
+    hash ^= static_cast<uint8_t>(c);
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+void loadJokeHistory() {
+  jokeHistoryCount = 0;
+  if (!prefs.begin("flightdesk", true)) return;
+  const String saved = prefs.getString("jokes", "");
+  if (prefs.getBytesLength("joke_ids") == sizeof(jokeFingerprints)) {
+    prefs.getBytes("joke_ids", jokeFingerprints, sizeof(jokeFingerprints));
+    jokeFingerprintUsed = constrain(static_cast<int>(prefs.getUInt("joke_used", 0)), 0, kJokeFingerprintCount);
+    jokeFingerprintNext = constrain(static_cast<int>(prefs.getUInt("joke_next", 0)), 0, kJokeFingerprintCount - 1);
+  }
+  prefs.end();
+  JsonDocument history;
+  if (!deserializeJson(history, saved)) {
+    for (JsonVariant value : history.as<JsonArray>()) {
+      if (jokeHistoryCount >= kJokeHistorySize) break;
+      const char* joke = value.as<const char*>();
+      if (joke && joke[0]) copyClean(jokeHistory[jokeHistoryCount++], 512, joke, "");
+    }
+  }
+  if (jokeFingerprintUsed == 0) {
+    for (int i = 0; i < jokeHistoryCount; ++i) {
+      jokeFingerprints[jokeFingerprintNext] = jokeFingerprint(jokeHistory[i]);
+      jokeFingerprintNext = (jokeFingerprintNext + 1) % kJokeFingerprintCount;
+      ++jokeFingerprintUsed;
+    }
+  }
+}
+
+void rememberJoke(const char* joke) {
+  if (jokeHistoryCount == kJokeHistorySize) {
+    for (int i = 1; i < kJokeHistorySize; ++i) {
+      memcpy(jokeHistory[i - 1], jokeHistory[i], sizeof(jokeHistory[i]));
+    }
+    --jokeHistoryCount;
+  }
+  copyClean(jokeHistory[jokeHistoryCount++], 512, joke, "");
+  jokeFingerprints[jokeFingerprintNext] = jokeFingerprint(joke);
+  jokeFingerprintNext = (jokeFingerprintNext + 1) % kJokeFingerprintCount;
+  if (jokeFingerprintUsed < kJokeFingerprintCount) ++jokeFingerprintUsed;
+  JsonDocument history;
+  JsonArray saved = history.to<JsonArray>();
+  for (int i = 0; i < jokeHistoryCount; ++i) saved.add(jokeHistory[i]);
+  String serialized;
+  serializeJson(history, serialized);
+  if (prefs.begin("flightdesk", false)) {
+    prefs.putString("jokes", serialized);
+    prefs.putBytes("joke_ids", jokeFingerprints, sizeof(jokeFingerprints));
+    prefs.putUInt("joke_used", jokeFingerprintUsed);
+    prefs.putUInt("joke_next", jokeFingerprintNext);
+    prefs.end();
+  }
+}
+
+bool jokeWasShown(const char* joke) {
+  const uint64_t fingerprint = jokeFingerprint(joke);
+  for (int i = 0; i < jokeFingerprintUsed; ++i) {
+    if (fingerprint == jokeFingerprints[i]) return true;
+  }
+  return false;
+}
+
 const char* activeWifiSsid() {
   return strlen(storedSsid) ? storedSsid : FLIGHTDESK_WIFI_SSID;
 }
@@ -2578,9 +2682,19 @@ void requestSelectedAnecdote() {
   pendingAnecdote = request;
   copyClean(anecdoteCallsign, sizeof(anecdoteCallsign), request.callsign, "VOL");
   anecdoteAnswer[0] = '\0';
+  previousAnecdote[0] = '\0';
   copyClean(anecdoteStatus, sizeof(anecdoteStatus), "GEMINI REFLECHIT...", "");
   lastAnecdoteHttpCode = 0;
   anecdoteOpen = true;
+  anecdoteRequested = true;
+}
+
+void requestMoreAnecdotes() {
+  if (anecdoteRequested || anecdoteInProgress) return;
+  copyClean(previousAnecdote, sizeof(previousAnecdote), anecdoteAnswer, "");
+  anecdoteAnswer[0] = '\0';
+  copyClean(anecdoteStatus, sizeof(anecdoteStatus), "GEMINI REFLECHIT...", "");
+  lastAnecdoteHttpCode = 0;
   anecdoteRequested = true;
 }
 
@@ -2612,6 +2726,10 @@ void fetchAircraftAnecdote(const AnecdoteRequest& plane) {
   prompt += "; immatriculation: "; prompt += plane.registration;
   prompt += "; compagnie: "; prompt += plane.airline;
   prompt += "; route annoncee: "; prompt += plane.route;
+  if (previousAnecdote[0]) {
+    prompt += ". Evite de repeter ces anecdotes deja affichees: ";
+    prompt += previousAnecdote;
+  }
   JsonDocument request;
   request["contents"][0]["parts"][0]["text"] = prompt;
   request["generationConfig"]["maxOutputTokens"] = 260;
@@ -2684,44 +2802,65 @@ void fetchJoke() {
       return;
     }
   }
-  JsonDocument request;
-  request["contents"][0]["parts"][0]["text"] =
-      "Raconte une seule blague volontairement tres nulle sur les avions, en francais. "
-      "Deux phrases maximum, 220 caracteres maximum, sans titre, sans markdown ni emoji.";
-  request["generationConfig"]["maxOutputTokens"] = 160;
-  request["generationConfig"]["temperature"] = 0.9;
-  String body;
-  serializeJson(request, body);
+  String prompt = "Raconte une seule blague volontairement tres nulle sur les avions, en francais. "
+                  "Deux phrases maximum, 220 caracteres maximum, sans titre, sans markdown ni emoji. "
+                  "Invente une blague differente de toutes celles ci, sans reprendre la meme chute: ";
+  for (int i = 0; i < jokeHistoryCount; ++i) {
+    prompt += "\n- ";
+    prompt += jokeHistory[i];
+  }
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    JsonDocument request;
+    request["contents"][0]["parts"][0]["text"] = prompt;
+    request["generationConfig"]["maxOutputTokens"] = 160;
+    request["generationConfig"]["temperature"] = 1.0;
+    String body;
+    serializeJson(request, body);
 
-  WiFiClientSecure client;
-  client.setCACert(kGoogleRoots);
-  HTTPClient http;
-  http.setTimeout(18000);
-  if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")) {
-    copyClean(jokeStatus, sizeof(jokeStatus), "CONNEXION IMPOSSIBLE", "");
-    return;
-  }
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-goog-api-key", storedGeminiKey);
-  const int code = http.POST(body);
-  lastJokeHttpCode = code;
-  if (code == HTTP_CODE_OK) {
-    JsonDocument response;
-    const String payload = http.getString();
-    if (!deserializeJson(response, payload)) {
-      const char* answer = response["candidates"][0]["content"]["parts"][0]["text"] | "";
-      copyFrenchForScreen(jokeAnswer, sizeof(jokeAnswer), answer);
+    WiFiClientSecure client;
+    client.setCACert(kGoogleRoots);
+    HTTPClient http;
+    http.setTimeout(18000);
+    if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")) {
+      copyClean(jokeStatus, sizeof(jokeStatus), "CONNEXION IMPOSSIBLE", "");
+      return;
     }
-    copyClean(jokeStatus, sizeof(jokeStatus), jokeAnswer[0] ? "GAG CERTIFIE NUL" : "REPONSE VIDE", "");
-  } else if (code == 402) {
-    copyClean(jokeStatus, sizeof(jokeStatus), "CREDIT GEMINI EPUISE", "");
-  } else if (code == 429) {
-    copyClean(jokeStatus, sizeof(jokeStatus), "QUOTA GEMINI DEPASSE", "");
-  } else {
-    copyClean(jokeStatus, sizeof(jokeStatus), "GEMINI INDISPONIBLE", "");
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("x-goog-api-key", storedGeminiKey);
+    const int code = http.POST(body);
+    lastJokeHttpCode = code;
+    if (code == HTTP_CODE_OK) {
+      JsonDocument response;
+      const String payload = http.getString();
+      if (!deserializeJson(response, payload)) {
+        const char* answer = response["candidates"][0]["content"]["parts"][0]["text"] | "";
+        copyFrenchForScreen(jokeAnswer, sizeof(jokeAnswer), answer);
+      }
+      if (jokeAnswer[0] && !jokeWasShown(jokeAnswer)) {
+        rememberJoke(jokeAnswer);
+        copyClean(jokeStatus, sizeof(jokeStatus), "GAG CERTIFIE NUL", "");
+        http.end();
+        break;
+      }
+      const bool duplicate = jokeAnswer[0];
+      jokeAnswer[0] = '\0';
+      copyClean(jokeStatus, sizeof(jokeStatus), duplicate ? "GAG DEJA ENTENDU" : "REPONSE VIDE", "");
+      if (duplicate && attempt == 0) {
+        prompt += "\nLa derniere tentative etait encore un doublon. Trouve une autre chute.";
+        http.end();
+        continue;
+      }
+    } else if (code == 402) {
+      copyClean(jokeStatus, sizeof(jokeStatus), "CREDIT GEMINI EPUISE", "");
+    } else if (code == 429) {
+      copyClean(jokeStatus, sizeof(jokeStatus), "QUOTA GEMINI DEPASSE", "");
+    } else {
+      copyClean(jokeStatus, sizeof(jokeStatus), "GEMINI INDISPONIBLE", "");
+    }
+    http.end();
+    break;
   }
-  http.end();
-  Serial.printf("[GEMINI] gag HTTP=%d status=%s\n", code, jokeStatus);
+  Serial.printf("[GEMINI] gag HTTP=%d status=%s history=%d\n", lastJokeHttpCode, jokeStatus, jokeHistoryCount);
 }
 
 void requestWeather() {
@@ -2729,6 +2868,7 @@ void requestWeather() {
   requestedWeatherLat = radarLat;
   requestedWeatherLon = radarLon;
   weatherCode = -1;
+  weatherForecastCount = 0;
   copyClean(weatherStatus, sizeof(weatherStatus), "CHARGEMENT METEO...", "");
   lastWeatherHttpCode = 0;
   weatherRequested = true;
@@ -2739,9 +2879,9 @@ void fetchWeather(double lat, double lon) {
     copyClean(weatherStatus, sizeof(weatherStatus), "WIFI HORS LIGNE", "");
     return;
   }
-  char url[240];
+  char url[360];
   snprintf(url, sizeof(url),
-           "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&forecast_days=1",
+           "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=4",
            lat, lon);
   WiFiClientSecure client;
   client.setInsecure();
@@ -2763,6 +2903,27 @@ void fetchWeather(double lat, double lon) {
       weatherHumidity = current["relative_humidity_2m"].as<int>();
       weatherWindKmh = current["wind_speed_10m"].as<float>();
       weatherCode = current["weather_code"].as<int>();
+      JsonObject daily = response["daily"].as<JsonObject>();
+      JsonArray dates = daily["time"].as<JsonArray>();
+      JsonArray codes = daily["weather_code"].as<JsonArray>();
+      JsonArray highs = daily["temperature_2m_max"].as<JsonArray>();
+      JsonArray lows = daily["temperature_2m_min"].as<JsonArray>();
+      JsonArray rain = daily["precipitation_probability_max"].as<JsonArray>();
+      if (!dates.isNull() && !codes.isNull() && !highs.isNull() && !lows.isNull() && !rain.isNull()) {
+        for (int i = 1; i <= 3; ++i) {
+          if (i >= dates.size() || i >= codes.size() || i >= highs.size() ||
+              i >= lows.size() || i >= rain.size()) break;
+          const char* isoDate = dates[i] | "";
+          if (strlen(isoDate) != 10 || codes[i].isNull() || highs[i].isNull() ||
+              lows[i].isNull() || rain[i].isNull()) break;
+          WeatherForecastDay& day = weatherForecast[weatherForecastCount++];
+          snprintf(day.date, sizeof(day.date), "%.2s/%.2s", isoDate + 8, isoDate + 5);
+          day.code = codes[i].as<int>();
+          day.highC = highs[i].as<float>();
+          day.lowC = lows[i].as<float>();
+          day.rainPercent = rain[i].as<int>();
+        }
+      }
       copyClean(weatherStatus, sizeof(weatherStatus), "METEO ACTUALISEE", "");
     } else {
       copyClean(weatherStatus, sizeof(weatherStatus), "REPONSE METEO INVALIDE", "");
@@ -2945,12 +3106,22 @@ void handleStatus() {
   doc["joke_status"] = jokeStatus;
   doc["joke_http_code"] = lastJokeHttpCode;
   doc["joke_answer"] = jokeAnswer;
+  doc["joke_unique_count"] = jokeFingerprintUsed;
   doc["weather_status"] = weatherStatus;
   doc["weather_http_code"] = lastWeatherHttpCode;
   doc["weather_code"] = weatherCode;
   doc["weather_temperature_c"] = weatherTemperatureC;
   doc["weather_humidity"] = weatherHumidity;
   doc["weather_wind_kmh"] = weatherWindKmh;
+  JsonArray forecast = doc["weather_forecast"].to<JsonArray>();
+  for (int i = 0; i < weatherForecastCount; ++i) {
+    JsonObject day = forecast.add<JsonObject>();
+    day["date"] = weatherForecast[i].date;
+    day["code"] = weatherForecast[i].code;
+    day["high_c"] = weatherForecast[i].highC;
+    day["low_c"] = weatherForecast[i].lowC;
+    day["rain_percent"] = weatherForecast[i].rainPercent;
+  }
   doc["setup_portal_active"] = setupPortalActive;
   doc["setup_ap_started"] = setupApStarted;
   doc["setup_ap_clients"] = setupApStarted ? WiFi.softAPgetStationNum() : 0;
@@ -3359,7 +3530,9 @@ void handleTap(uint16_t x, uint16_t y) {
   }
 
   if (anecdoteOpen) {
-    if (inRect(x, y, 150, 348, 180, 46) || !inRect(x, y, 48, 82, 384, 316)) {
+    if (inRect(x, y, 70, 348, 160, 46)) {
+      requestMoreAnecdotes();
+    } else if (inRect(x, y, 250, 348, 160, 46) || !inRect(x, y, 48, 82, 384, 316)) {
       anecdoteOpen = false;
     }
     return;
@@ -3616,6 +3789,7 @@ void setup() {
   initTouch();
   initImu();
   loadWifiSettings();
+  loadJokeHistory();
   loadLocationSettings();
   connectWifi();
   statusServer.on("/status", HTTP_GET, handleStatus);
