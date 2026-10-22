@@ -9,9 +9,10 @@ Waveshare 2.8C, SKU 29086, avec 16 Mo de flash et 8 Mo de PSRAM.
 
 Le radar reprend la palette verte, les cercles, le balayage, les avions, la
 carte en filigrane et la navigation du simulateur web. Les touches permettent
-de sélectionner un avion, ouvrir les pages, choisir un code postal parmi les
-présélections, régler le rayon (20/50/100/250 km), basculer le mode nuit et
-recentrer la carte. Le rayon et le mode nuit sont enregistrés en NVS.
+de sélectionner un avion, ouvrir les pages, saisir un NPA suisse sur un clavier
+tactile, régler le rayon (20/50/100/250 km) et recentrer la carte. Le NPA et
+le rayon sont enregistrés en NVS. Les NPA hors des présélections sont résolus
+directement par le service de recherche de swisstopo.
 
 La fiche avion récupère directement par Internet l'itinéraire,
 l'immatriculation, le type et une miniature. Elle interroge ADSBdb, HexDB pour
@@ -28,7 +29,8 @@ OpenStreetMap sont téléchargées en HTTPS et conservées en cache local Little
 Pendant un glissement, la carte suit le doigt ; les avions sont repositionnés
 au relâchement, puis le trafic est actualisé. Le trafic accepte jusqu'à 512 avions
 dans le rayon choisi et conserve les dernières données lors d'une panne temporaire
-de l'API. Une carte embarquée sert de repli ; les avions de démonstration ne
+de l'API. Les symboles avancent entre deux réponses selon leur cap et leur vitesse.
+Une carte embarquée sert de repli ; les avions de démonstration ne
 s'affichent que sans Wi-Fi. La barre du radar contient HOME, REGL et IA ;
 HOME recentre la carte. La page Assistant reste une maquette limitée :
 la saisie texte et audio n'est pas encore portée.

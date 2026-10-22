@@ -120,6 +120,7 @@ int lastMapTileHttpCode = 0;
 bool radarBaseDirty = true;
 bool mapFetchInProgress = false;
 uint32_t lastTrafficFetchMs = 0;
+uint32_t lastTrafficAnimationMs = 0;
 bool trafficLive = false;
 bool trafficFetchFailed = false;
 int lastTrafficHttpCode = 0;
@@ -150,7 +151,6 @@ uint16_t dragLastY = 0;
 constexpr double kHomeLat = 46.5096;
 constexpr double kHomeLon = 6.3077;
 int radarRangeKm = 50;
-bool nightMode = true;
 constexpr int kRadarCx = 240;
 constexpr int kRadarCy = 240;
 // Keep the bright radar rim close to the round display edge.
@@ -165,6 +165,12 @@ int pngTileScreenY = 0;
 double radarLat = kHomeLat;
 double radarLon = kHomeLon;
 char currentPostal[8] = "1188";
+char homePostal[8] = "1188";
+double homeLat = kHomeLat;
+double homeLon = kHomeLon;
+bool postalKeyboardOpen = false;
+char postalInput[5] = "";
+char postalError[32] = "";
 
 struct PostalPreset {
   const char* code;
@@ -181,7 +187,6 @@ constexpr PostalPreset kPostalPresets[] = {
     {"1110", "MORGES", 46.5110, 6.4985},
     {"2000", "NEUCHATEL", 46.9918, 6.9310},
     {"1700", "FRIBOURG", 46.8065, 7.1619}};
-int postalIndex = 0;
 
 struct RadarPlane {
   int x;
@@ -208,6 +213,11 @@ struct LivePlane {
   int x;
   int y;
   int heading;
+  float screenX;
+  float screenY;
+  float trackDeg;
+  uint32_t sampleMs;
+  bool motionKnown;
   double lat;
   double lon;
   char hex[8];
@@ -1066,10 +1076,40 @@ void updateLivePlanePositions() {
   for (int read = 0; read < livePlaneCount; ++read) {
     LivePlane p = livePlanes[read];
     if (!updateLivePlanePosition(p)) continue;
+    p.screenX = p.x;
+    p.screenY = p.y;
     livePlanes[write++] = p;
   }
   livePlaneCount = write;
   if (selectedPlane >= livePlaneCount) selectedPlane = -1;
+}
+
+void animateLivePlanePositions(uint32_t now, uint32_t stepMs) {
+  if (!trafficLive || !livePlanes || mapDragging || radarRangeKm <= 0) return;
+  const float blend = min(1.0f, static_cast<float>(stepMs) / 550.0f);
+  for (int i = 0; i < livePlaneCount; ++i) {
+    LivePlane& p = livePlanes[i];
+    double lat = p.lat;
+    double lon = p.lon;
+    if (p.motionKnown && p.speedKmh > 0) {
+      const uint32_t ageMs = min<uint32_t>(now - p.sampleMs, 45000);
+      const double travelKm = p.speedKmh * (static_cast<double>(ageMs) / 3600000.0);
+      const double trackRad = p.trackDeg * DEG_TO_RAD;
+      lat += cos(trackRad) * travelKm / 111.32;
+      const double cosLat = cos(lat * DEG_TO_RAD);
+      if (fabs(cosLat) > 0.01) lon += sin(trackRad) * travelKm / (111.32 * cosLat);
+    }
+    const double dist = distanceKm(radarLat, radarLon, lat, lon);
+    const double bearing = bearingDeg(radarLat, radarLon, lat, lon) * DEG_TO_RAD;
+    const double radius = (dist / radarRangeKm) * (kRadarRadius - 26);
+    const float targetX = kRadarCx + sin(bearing) * radius;
+    const float targetY = kRadarCy - cos(bearing) * radius;
+    p.screenX += (targetX - p.screenX) * blend;
+    p.screenY += (targetY - p.screenY) * blend;
+    p.x = static_cast<int>(round(p.screenX));
+    p.y = static_cast<int>(round(p.screenY));
+    p.distanceKm = static_cast<int>(round(dist));
+  }
 }
 
 bool fetchTrafficPayload(const char* provider, const char* url, String& payload) {
@@ -1166,6 +1206,11 @@ void fetchTraffic() {
                             : !ac["true_heading"].isNull() ? ac["true_heading"].as<double>()
                             : bearing;
     p.heading = static_cast<int>(round(heading)) - 90;
+    p.trackDeg = static_cast<float>(heading);
+    p.sampleMs = millis();
+    p.motionKnown = !ac["track"].isNull() || !ac["true_heading"].isNull();
+    p.screenX = p.x;
+    p.screenY = p.y;
     copyClean(p.hex, sizeof(p.hex), ac["hex"] | "", "");
     copyClean(p.callsign, sizeof(p.callsign), ac["flight"] | ac["r"] | ac["hex"] | "", "VOL");
     copyClean(p.type, sizeof(p.type), ac["t"] | ac["desc"] | "", "TYPE INCONNU");
@@ -1196,14 +1241,20 @@ void fetchTraffic() {
     if (!next.hex[0]) continue;
     for (int old = 0; old < livePlaneCount; ++old) {
       const LivePlane& previous = livePlanes[old];
-      if (strcmp(next.hex, previous.hex) != 0 || !previous.enriched) continue;
-      copyClean(next.type, sizeof(next.type), previous.type, next.type);
-      copyClean(next.registration, sizeof(next.registration), previous.registration, next.registration);
-      copyClean(next.airline, sizeof(next.airline), previous.airline, "");
-      copyClean(next.route, sizeof(next.route), previous.route, next.route);
-      copyClean(next.photo, sizeof(next.photo), previous.photo, "");
-      copyClean(next.photoUrl, sizeof(next.photoUrl), previous.photoUrl, "");
-      next.enriched = true;
+      if (strcmp(next.hex, previous.hex) != 0) continue;
+      next.screenX = previous.screenX;
+      next.screenY = previous.screenY;
+      next.x = previous.x;
+      next.y = previous.y;
+      if (previous.enriched) {
+        copyClean(next.type, sizeof(next.type), previous.type, next.type);
+        copyClean(next.registration, sizeof(next.registration), previous.registration, next.registration);
+        copyClean(next.airline, sizeof(next.airline), previous.airline, "");
+        copyClean(next.route, sizeof(next.route), previous.route, next.route);
+        copyClean(next.photo, sizeof(next.photo), previous.photo, "");
+        copyClean(next.photoUrl, sizeof(next.photoUrl), previous.photoUrl, "");
+        next.enriched = true;
+      }
       break;
     }
   }
@@ -1600,14 +1651,34 @@ void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t
 }
 
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
+  if (appView == AppView::Settings && postalKeyboardOpen) {
+    blendRoundRect(72, 70, 336, 340, 22, rgb565(0, 10, 9), 242);
+    drawRoundRect(72, 70, 336, 340, 22, green);
+    drawTextCentered(240, 90, "CODE POSTAL", green, 2);
+    drawTextCentered(240, 126, postalInput[0] ? postalInput : "____", text, 2);
+    drawTextCentered(240, 153, postalError, green, 1);
+    drawTextCentered(382, 88, "X", text, 2);
+    constexpr int keyX[] = {100, 194, 288};
+    const char* keys[4][3] = {{"1", "2", "3"}, {"4", "5", "6"},
+                              {"7", "8", "9"}, {"<", "0", "OK"}};
+    for (int row = 0; row < 4; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        const int y = 174 + row * 49;
+        fillRoundRect(keyX[col], y, 86, 42, 10, rgb565(12, 26, 16));
+        drawRoundRect(keyX[col], y, 86, 42, 10, green);
+        drawTextCentered(keyX[col] + 43, y + 11, keys[row][col], text, 2);
+      }
+    }
+    return;
+  }
   blendRoundRect(72, 96, 336, 276, 22, rgb565(0, 10, 9), 232);
   drawRoundRect(72, 96, 336, 276, 22, rgb565(62, 176, 98));
   if (appView == AppView::Settings) {
     drawTextCentered(240, 120, "REGLAGES", green, 2);
     drawText(100, 151, "CODE POSTAL", text, 1);
-    drawText(166, 168, "<", green, 2);
+    fillRoundRect(154, 159, 172, 36, 10, rgb565(12, 26, 16));
+    drawRoundRect(154, 159, 172, 36, 10, green);
     drawTextCentered(240, 168, currentPostal, green, 2);
-    drawText(302, 168, ">", green, 2);
     drawText(100, 199, "RAYON RADAR", text, 1);
     constexpr int ranges[] = {20, 50, 100, 250};
     for (int i = 0; i < 4; ++i) {
@@ -1619,10 +1690,6 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
       snprintf(range, sizeof(range), "%d", ranges[i]);
       drawTextCentered(x + 32, 225, range, active ? green : text, 1);
     }
-    drawText(100, 265, "MODE NUIT", text, 1);
-    fillRoundRect(292, 257, 72, 30, 14, nightMode ? rgb565(40, 132, 57) : rgb565(26, 34, 28));
-    drawRoundRect(292, 257, 72, 30, 14, green);
-    drawTextCentered(328, 267, nightMode ? "ON" : "OFF", nightMode ? rgb565(2, 13, 5) : text, 1);
     fillRoundRect(100, 296, 128, 30, 10, rgb565(12, 26, 16));
     drawRoundRect(100, 296, 128, 30, 10, green);
     drawTextCentered(164, 306, "WIFI SETUP", text, 1);
@@ -1831,7 +1898,7 @@ void buildRadarBaseFrame() {
       }
     }
   }
-  blendFillCircle(cx, cy, kMapRadius - 2, rgb565(1, 5, 2), nightMode ? 115 : 72);
+  blendFillCircle(cx, cy, kMapRadius - 2, rgb565(1, 5, 2), 72);
   blendFillCircle(cx, cy, r / 2, rgb565(24, 112, 43), 6);
 
   blendCircle(cx, cy, kMapRadius - 1, softGreen, 46);
@@ -1913,15 +1980,7 @@ void drawRadarFrame() {
     drawLine(noseX, noseY, rightX, rightY, green);
   }
 
-  char countText[12];
-  snprintf(countText, sizeof(countText), "%d", visibleAircraftCount());
   drawTextCentered(cx, 77, "18:47", text, 1);
-  drawTextCentered(cx, 96, trafficLive ? "LIVE AIRPLANES" :
-                           WiFi.status() == WL_CONNECTED ?
-                             (trafficFetchFailed ? "TRAFIC INDISPONIBLE" : "CHARGEMENT TRAFIC") :
-                             "TRAFIC SIMULE", softGreen, 1);
-  drawTextCentered(cx, 119, countText, green, 2);
-  drawTextCentered(cx, 144, "AVIONS", green, 2);
   char innerRange[8];
   char outerRange[8];
   snprintf(innerRange, sizeof(innerRange), "%d", radarRangeKm * 2 / 5);
@@ -2118,14 +2177,6 @@ const char* activeWifiPassword() {
   return strlen(storedSsid) ? storedPassword : FLIGHTDESK_WIFI_PASSWORD;
 }
 
-void applyPostalIndex(int index) {
-  const int count = sizeof(kPostalPresets) / sizeof(kPostalPresets[0]);
-  postalIndex = (index % count + count) % count;
-  copyClean(currentPostal, sizeof(currentPostal), kPostalPresets[postalIndex].code, "1188");
-  radarLat = kPostalPresets[postalIndex].lat;
-  radarLon = kPostalPresets[postalIndex].lon;
-}
-
 void saveLocationSettings() {
   if (!prefs.begin("flightdesk", false)) {
     Serial.println("[LOC] NVS ecriture KO");
@@ -2134,6 +2185,9 @@ void saveLocationSettings() {
   prefs.putString("npa", currentPostal);
   prefs.putDouble("lat", radarLat);
   prefs.putDouble("lon", radarLon);
+  prefs.putString("home_npa", homePostal);
+  prefs.putDouble("home_lat", homeLat);
+  prefs.putDouble("home_lon", homeLon);
   prefs.end();
 }
 
@@ -2145,43 +2199,18 @@ void loadLocationSettings() {
   const String npa = prefs.getString("npa", "1188");
   const double lat = prefs.getDouble("lat", kHomeLat);
   const double lon = prefs.getDouble("lon", kHomeLon);
+  const String savedHomePostal = prefs.getString("home_npa", npa.length() == 4 ? npa : "1188");
+  homeLat = prefs.getDouble("home_lat", npa.length() == 4 ? lat : kHomeLat);
+  homeLon = prefs.getDouble("home_lon", npa.length() == 4 ? lon : kHomeLon);
   const int savedRange = prefs.getInt("range", 50);
   radarRangeKm = (savedRange == 20 || savedRange == 50 || savedRange == 100 || savedRange == 250)
                      ? savedRange : 50;
-  nightMode = prefs.getBool("night", true);
   prefs.end();
-
-  int preset = 0;
-  const int count = sizeof(kPostalPresets) / sizeof(kPostalPresets[0]);
-  for (int i = 0; i < count; ++i) {
-    if (npa == kPostalPresets[i].code) {
-      preset = i;
-      break;
-    }
-  }
-  postalIndex = preset;
+  copyClean(homePostal, sizeof(homePostal), savedHomePostal.c_str(), "1188");
   copyClean(currentPostal, sizeof(currentPostal), npa.c_str(), "1188");
   radarLat = lat;
   radarLon = lon;
   radarBaseDirty = true;
-}
-
-void changePostal(int delta) {
-  applyPostalIndex(postalIndex + delta);
-  saveLocationSettings();
-  ++mapGeneration;
-  embeddedMapOffsetX = 0;
-  embeddedMapOffsetY = 0;
-  mapReady = false;
-  radarBaseDirty = true;
-  mapReloadAfterMs = 0;
-  lastMapFetchMs = 0;
-  lastTrafficFetchMs = 0;
-  trafficLive = false;
-  trafficFetchFailed = false;
-  livePlaneCount = 0;
-  selectedPlane = -1;
-  Serial.printf("[LOC] NPA %s %.5f,%.5f\n", currentPostal, radarLat, radarLon);
 }
 
 String htmlEscape(const char* value) {
@@ -2233,7 +2262,20 @@ void handleStatus() {
   doc["traffic_http_code"] = lastTrafficHttpCode;
   doc["traffic_payload_bytes"] = lastTrafficPayloadBytes;
   doc["traffic_fetch_failed"] = trafficFetchFailed;
+  for (int i = 0; i < livePlaneCount; ++i) {
+    const LivePlane& p = livePlanes[i];
+    if (!p.motionKnown || p.speedKmh <= 0) continue;
+    doc["motion_plane"]["hex"] = p.hex;
+    doc["motion_plane"]["x"] = p.x;
+    doc["motion_plane"]["y"] = p.y;
+    doc["motion_plane"]["speed_kmh"] = p.speedKmh;
+    doc["motion_plane"]["sample_age_ms"] = millis() - p.sampleMs;
+    break;
+  }
   doc["range_km"] = radarRangeKm;
+  doc["npa"] = currentPostal;
+  doc["home_npa"] = homePostal;
+  doc["postal_keyboard_open"] = postalKeyboardOpen;
   doc["center_lat"] = radarLat;
   doc["center_lon"] = radarLon;
   doc["map_ready"] = mapReady;
@@ -2425,9 +2467,74 @@ void setRadarRange(int rangeKm) {
 }
 
 void recenterMap() {
-  applyPostalIndex(postalIndex);
+  copyClean(currentPostal, sizeof(currentPostal), homePostal, "1188");
+  radarLat = homeLat;
+  radarLon = homeLon;
   saveLocationSettings();
   invalidateLiveData();
+}
+
+bool resolvePostalCode(const char* code, double& lat, double& lon) {
+  for (const PostalPreset& preset : kPostalPresets) {
+    if (strcmp(code, preset.code) == 0) {
+      lat = preset.lat;
+      lon = preset.lon;
+      return true;
+    }
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    copyClean(postalError, sizeof(postalError), "WIFI REQUIS", "");
+    return false;
+  }
+
+  char url[200];
+  snprintf(url, sizeof(url),
+           "https://api3.geo.admin.ch/rest/services/api/SearchServer?searchText=%s&type=locations&origins=zipcode&sr=4326&limit=10",
+           code);
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setUserAgent("FlightDesk/0.2 (https://github.com/jeanne0r/FlightDesk)");
+  http.setTimeout(9000);
+  if (!http.begin(client, url)) {
+    copyClean(postalError, sizeof(postalError), "RESEAU INDISPONIBLE", "");
+    return false;
+  }
+  const int status = http.GET();
+  if (status != HTTP_CODE_OK) {
+    http.end();
+    copyClean(postalError, sizeof(postalError), "RESEAU INDISPONIBLE", "");
+    return false;
+  }
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, http.getStream());
+  http.end();
+  if (error) {
+    copyClean(postalError, sizeof(postalError), "REPONSE INVALIDE", "");
+    return false;
+  }
+  for (JsonObject result : doc["results"].as<JsonArray>()) {
+    JsonObject attrs = result["attrs"].as<JsonObject>();
+    if (strcmp(attrs["detail"] | "", code) != 0) continue;
+    if (attrs["lat"].isNull() || attrs["lon"].isNull()) continue;
+    lat = attrs["lat"].as<double>();
+    lon = attrs["lon"].as<double>();
+    return true;
+  }
+  copyClean(postalError, sizeof(postalError), "NPA INTROUVABLE", "");
+  return false;
+}
+
+void applyPostalCode(const char* code, double lat, double lon) {
+  copyClean(homePostal, sizeof(homePostal), code, "1188");
+  homeLat = lat;
+  homeLon = lon;
+  copyClean(currentPostal, sizeof(currentPostal), code, "1188");
+  radarLat = lat;
+  radarLon = lon;
+  invalidateLiveData();
+  saveLocationSettings();
+  Serial.printf("[LOC] NPA %s %.5f,%.5f\n", currentPostal, radarLat, radarLon);
 }
 
 void shiftMapFrame(int dx, int dy) {
@@ -2491,6 +2598,42 @@ int nearestPlaneAt(uint16_t x, uint16_t y) {
   return best;
 }
 
+void handlePostalKeyboardTap(uint16_t x, uint16_t y) {
+  if (inRect(x, y, 356, 72, 48, 50)) {
+    postalKeyboardOpen = false;
+    return;
+  }
+  for (int row = 0; row < 4; ++row) {
+    for (int col = 0; col < 3; ++col) {
+      if (!inRect(x, y, 100 + col * 94, 174 + row * 49, 86, 42)) continue;
+      const size_t length = strlen(postalInput);
+      postalError[0] = '\0';
+      if (row == 3 && col == 0) {
+        if (length) postalInput[length - 1] = '\0';
+      } else if (row == 3 && col == 2) {
+        if (length != 4) {
+          copyClean(postalError, sizeof(postalError), "4 CHIFFRES REQUIS", "");
+          return;
+        }
+        copyClean(postalError, sizeof(postalError), "RECHERCHE...", "");
+        drawRadarFrame();
+        double lat = 0.0;
+        double lon = 0.0;
+        if (resolvePostalCode(postalInput, lat, lon)) {
+          applyPostalCode(postalInput, lat, lon);
+          postalKeyboardOpen = false;
+          postalError[0] = '\0';
+        }
+      } else if (length < 4) {
+        const char digit = row == 3 ? '0' : static_cast<char>('1' + row * 3 + col);
+        postalInput[length] = digit;
+        postalInput[length + 1] = '\0';
+      }
+      return;
+    }
+  }
+}
+
 void handleTap(uint16_t x, uint16_t y) {
   lastTouchX = x;
   lastTouchY = y;
@@ -2499,21 +2642,20 @@ void handleTap(uint16_t x, uint16_t y) {
 
   if (appView != AppView::Radar) {
     if (appView == AppView::Settings) {
-      if (inRect(x, y, 150, 159, 45, 34)) { changePostal(-1); return; }
-      if (inRect(x, y, 285, 159, 45, 34)) { changePostal(1); return; }
+      if (postalKeyboardOpen) {
+        handlePostalKeyboardTap(x, y);
+        return;
+      }
+      if (inRect(x, y, 150, 153, 180, 48)) {
+        postalInput[0] = '\0';
+        postalError[0] = '\0';
+        postalKeyboardOpen = true;
+        return;
+      }
       if (inRect(x, y, 100, 210, 280, 44)) {
         constexpr int ranges[] = {20, 50, 100, 250};
         const int index = (x - 100) / 72;
         if (index < 4) setRadarRange(ranges[index]);
-        return;
-      }
-      if (inRect(x, y, 284, 251, 88, 44)) {
-        nightMode = !nightMode;
-        radarBaseDirty = true;
-        if (prefs.begin("flightdesk", false)) {
-          prefs.putBool("night", nightMode);
-          prefs.end();
-        }
         return;
       }
       if (inRect(x, y, 96, 290, 138, 44)) { startWifiPortal(); return; }
@@ -2792,6 +2934,12 @@ void loop() {
 
   if (trafficFrameDirty) {
     trafficFrameDirty = false;
+  }
+
+  if (now - lastTrafficAnimationMs >= 80) {
+    const uint32_t stepMs = lastTrafficAnimationMs == 0 ? 80 : now - lastTrafficAnimationMs;
+    lastTrafficAnimationMs = now;
+    animateLivePlanePositions(now, stepMs);
   }
 
   if (now - lastTouchPollMs >= 30) {
