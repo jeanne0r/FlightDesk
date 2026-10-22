@@ -2365,6 +2365,8 @@ void testGeminiConnection() {
               !error && answer[0] ? "CONNEXION GEMINI OK" : "REPONSE GEMINI VIDE", "");
   } else if (code == 400 || code == 401 || code == 403) {
     copyClean(geminiStatus, sizeof(geminiStatus), "CLE REFUSEE", "");
+  } else if (code == 402) {
+    copyClean(geminiStatus, sizeof(geminiStatus), "CREDIT GEMINI EPUISE", "");
   } else if (code == 404) {
     copyClean(geminiStatus, sizeof(geminiStatus), "MODELE INDISPONIBLE", "");
   } else if (code == 429) {
