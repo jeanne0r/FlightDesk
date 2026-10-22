@@ -40,7 +40,10 @@ configurer une clé Gemini et de tester directement la connexion depuis l'ESP32.
 
 Depuis l'écran, ouvrir **IA → CONFIG**. Se connecter au réseau
 `FlightDesk-Setup` avec le mot de passe affiché, puis ouvrir
-`http://192.168.4.1/ai` sur le téléphone. La clé API est enregistrée dans la
+`http://192.168.4.1/ai` sur le téléphone. Si le téléphone est déjà sur le
+même Wi-Fi que l'écran, l'adresse locale affichée sous celle du portail
+fonctionne également (par exemple `http://192.168.1.159/ai`). La clé API est
+enregistrée dans la
 mémoire NVS de l'appareil, sans passer par le simulateur. Après enregistrement,
 l'ESP32 appelle `gemini-3.5-flash-lite` pour vérifier l'accès au modèle. Le
 bouton **TEST** relance cette vérification. La page et `/status` affichent le

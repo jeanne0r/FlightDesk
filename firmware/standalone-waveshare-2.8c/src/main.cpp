@@ -185,6 +185,7 @@ volatile int enrichRequestedPlane = -1;
 volatile bool enrichInProgress = false;
 TaskHandle_t enrichTaskHandle = nullptr;
 bool setupPortalActive = false;
+bool setupApStarted = false;
 bool otaStarted = false;
 char storedSsid[33] = "";
 char storedPassword[65] = "";
@@ -1816,7 +1817,12 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   if (setupPortalActive) {
     drawTextCentered(240, 222, "FlightDesk-Setup", text, 1);
     drawTextCentered(240, 241, setupApPassword, green, 1);
-    drawTextCentered(240, 260, "192.168.4.1/ai", text, 1);
+    drawTextCentered(240, 260, setupApStarted ? "192.168.4.1/ai" : "AP INDISPONIBLE", text, 1);
+    if (WiFi.status() == WL_CONNECTED) {
+      char lanUrl[44];
+      snprintf(lanUrl, sizeof(lanUrl), "ou %s/ai", WiFi.localIP().toString().c_str());
+      drawTextCentered(240, 278, lanUrl, text, 1);
+    }
   } else {
     drawTextCentered(240, 241, "CONFIG ouvre le Wi-Fi local", text, 1);
   }
@@ -2540,6 +2546,9 @@ void handleStatus() {
   doc["gemini_status"] = geminiStatus;
   doc["gemini_http_code"] = lastGeminiHttpCode;
   doc["gemini_tls_ok"] = geminiTlsOk;
+  doc["setup_portal_active"] = setupPortalActive;
+  doc["setup_ap_started"] = setupApStarted;
+  doc["setup_ap_clients"] = setupApStarted ? WiFi.softAPgetStationNum() : 0;
   if (selectedPlane >= 0 && trafficLive && selectedPlane < livePlaneCount) {
     const LivePlane& p = livePlanes[selectedPlane];
     doc["selected"]["hex"] = p.hex;
@@ -2582,7 +2591,7 @@ void handleSetupSave() {
 void startWifiPortal() {
   if (setupPortalActive) return;
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP("FlightDesk-Setup", setupApPassword);
+  setupApStarted = WiFi.softAP("FlightDesk-Setup", setupApPassword);
   setupServer.on("/", HTTP_GET, handleSetupRoot);
   setupServer.on("/save", HTTP_POST, handleSetupSave);
   setupServer.on("/ai", HTTP_GET, handleGeminiRoot);
