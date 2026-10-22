@@ -288,10 +288,44 @@ LivePlane* livePlanes = nullptr;
 LivePlane* fetchedPlanes = nullptr;
 int livePlaneCount = 0;
 
+struct AnecdoteRequest {
+  char hex[8];
+  char callsign[12];
+  char type[20];
+  char registration[16];
+  char airline[28];
+  char route[36];
+};
+AnecdoteRequest pendingAnecdote = {};
+char anecdoteCallsign[12] = "";
+char anecdoteAnswer[512] = "";
+char anecdoteStatus[48] = "";
+bool anecdoteOpen = false;
+volatile bool anecdoteRequested = false;
+volatile bool anecdoteInProgress = false;
+int lastAnecdoteHttpCode = 0;
+char jokeAnswer[512] = "";
+char jokeStatus[48] = "";
+volatile bool jokeRequested = false;
+volatile bool jokeInProgress = false;
+int lastJokeHttpCode = 0;
+char weatherStatus[48] = "";
+volatile bool weatherRequested = false;
+volatile bool weatherInProgress = false;
+double requestedWeatherLat = 0;
+double requestedWeatherLon = 0;
+float weatherTemperatureC = 0;
+float weatherWindKmh = 0;
+int weatherHumidity = 0;
+int weatherCode = -1;
+int lastWeatherHttpCode = 0;
+
 enum class AppView : uint8_t {
   Radar,
   Settings,
-  Assistant
+  Assistant,
+  Joke,
+  Weather
 };
 
 AppView appView = AppView::Radar;
@@ -1669,6 +1703,47 @@ void drawTextCentered(int cx, int y, const char* text, uint16_t color, int scale
   drawText(cx - textWidth(text, scale) / 2, y, text, color, scale);
 }
 
+void drawWrappedText(int x, int y, int maxWidth, int maxLines, const char* value, uint16_t color) {
+  char line[80] = "";
+  int length = 0;
+  int lines = 0;
+  const char* cursor = value;
+  while (*cursor && lines < maxLines) {
+    if (*cursor == '\n') {
+      if (length) {
+        drawText(x, y + lines * 19, line, color, 1);
+        ++lines;
+        length = 0;
+        line[0] = '\0';
+      }
+      ++cursor;
+      continue;
+    }
+    while (*cursor == ' ') ++cursor;
+    char word[80];
+    int wordLength = 0;
+    while (*cursor && *cursor != ' ' && *cursor != '\n') {
+      if (wordLength + 1 < static_cast<int>(sizeof(word))) word[wordLength++] = *cursor;
+      ++cursor;
+    }
+    word[wordLength] = '\0';
+    if (!wordLength) continue;
+    const int extra = length ? 1 : 0;
+    if (length && (length + extra + wordLength >= static_cast<int>(sizeof(line)) ||
+                   textWidth(line, 1) + textWidth(word, 1) + textWidth(" ", 1) > maxWidth)) {
+      drawText(x, y + lines * 19, line, color, 1);
+      ++lines;
+      length = 0;
+      line[0] = '\0';
+      if (lines >= maxLines) break;
+    }
+    if (length) line[length++] = ' ';
+    for (int i = 0; i < wordLength && length + 1 < static_cast<int>(sizeof(line)); ++i) line[length++] = word[i];
+    line[length] = '\0';
+  }
+  if (length && lines < maxLines) drawText(x, y + lines * 19, line, color, 1);
+}
+
 void drawTextOnUpperArc(int cx, int cy, int radius, const char* text, uint16_t color) {
   const float totalWidth = static_cast<float>(textWidth(text, 0));
   float advance = -totalWidth / 2.0f;
@@ -1756,6 +1831,18 @@ void drawMapWatermark(uint16_t terrain, uint16_t forest, uint16_t road, uint16_t
   drawText(388, 256, "A1", label, 1);
 }
 
+const char* weatherCodeLabel(int code) {
+  if (code == 0) return "CIEL DEGAGE";
+  if (code <= 3) return "NUAGEUX";
+  if (code == 45 || code == 48) return "BROUILLARD";
+  if (code >= 51 && code <= 67) return "PLUIE";
+  if (code >= 71 && code <= 77) return "NEIGE";
+  if (code >= 80 && code <= 82) return "AVERSES";
+  if (code >= 85 && code <= 86) return "NEIGE";
+  if (code >= 95) return "ORAGE";
+  return "CONDITIONS VARIABLES";
+}
+
 void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
   if (appView == AppView::Settings && postalKeyboardOpen) {
     blendRoundRect(72, 70, 336, 340, 22, rgb565(0, 10, 9), 242);
@@ -1808,6 +1895,44 @@ void drawMenuPanel(uint16_t green, uint16_t text, uint16_t panel) {
     } else {
       drawTextCentered(240, 344, WiFi.status() == WL_CONNECTED ? activeWifiSsid() : "WIFI HORS LIGNE", text, 1);
     }
+    return;
+  }
+
+  if (appView == AppView::Joke) {
+    drawTextCentered(240, 120, "GAG NUL", green, 2);
+    drawTextCentered(240, 152, jokeStatus, green, 1);
+    if (jokeAnswer[0]) drawWrappedText(100, 186, 280, 6, jokeAnswer, text);
+    else if (jokeRequested || jokeInProgress) drawTextCentered(240, 220, "Recherche en cours...", text, 1);
+    fillRoundRect(100, 304, 128, 36, 10, rgb565(12, 26, 16));
+    drawRoundRect(100, 304, 128, 36, 10, green);
+    drawTextCentered(164, 315, "ENCORE", text, 1);
+    fillRoundRect(252, 304, 112, 36, 10, rgb565(12, 26, 16));
+    drawRoundRect(252, 304, 112, 36, 10, green);
+    drawTextCentered(308, 315, "FERMER", text, 1);
+    return;
+  }
+
+  if (appView == AppView::Weather) {
+    drawTextCentered(240, 120, "METEO LOCALE", green, 2);
+    if (weatherCode >= 0) {
+      char line[48];
+      snprintf(line, sizeof(line), "%.1f C", weatherTemperatureC);
+      drawTextCentered(240, 163, line, green, 3);
+      drawTextCentered(240, 204, weatherCodeLabel(weatherCode), text, 1);
+      snprintf(line, sizeof(line), "HUMIDITE %d %%", weatherHumidity);
+      drawTextCentered(240, 231, line, text, 1);
+      snprintf(line, sizeof(line), "VENT %.0f KM/H", weatherWindKmh);
+      drawTextCentered(240, 253, line, text, 1);
+    } else {
+      drawTextCentered(240, 201, weatherStatus, text, 1);
+    }
+    drawTextCentered(240, 278, "Source: Open-Meteo", green, 0);
+    fillRoundRect(100, 304, 128, 36, 10, rgb565(12, 26, 16));
+    drawRoundRect(100, 304, 128, 36, 10, green);
+    drawTextCentered(164, 315, "ACTUALISER", text, 1);
+    fillRoundRect(252, 304, 112, 36, 10, rgb565(12, 26, 16));
+    drawRoundRect(252, 304, 112, 36, 10, green);
+    drawTextCentered(308, 315, "FERMER", text, 1);
     return;
   }
 
@@ -1882,24 +2007,43 @@ void drawAircraftPopup(uint16_t green, uint16_t text, uint16_t panel) {
     drawTextCentered(339, 257, trafficLive ? livePlanes[selectedPlane].photo : "INDISPONIBLE", text, 1);
   }
 
+  fillRoundRect(286, 296, 106, 30, 9, rgb565(16, 55, 29));
+  drawRoundRect(286, 296, 106, 30, 9, green);
+  drawTextCentered(339, 305, "DETAILS", text, 1);
+
   blendRoundRect(378, 144, 34, 34, 13, rgb565(2, 24, 16), 226);
   drawRoundRect(378, 144, 34, 34, 13, green);
   drawTextCentered(395, 153, "X", text, 2);
 }
 
+void drawAircraftAnecdote(uint16_t green, uint16_t text) {
+  blendRoundRect(48, 82, 384, 316, 20, rgb565(0, 10, 9), 243);
+  drawRoundRect(48, 82, 384, 316, 20, green);
+  drawText(76, 104, "ANECDOTES", green, 2);
+  drawText(76, 132, anecdoteCallsign, text, 1);
+  drawText(76, 158, anecdoteStatus, green, 1);
+  if (anecdoteAnswer[0]) drawWrappedText(76, 186, 328, 9, anecdoteAnswer, text);
+  else if (anecdoteInProgress || anecdoteRequested) {
+    drawTextCentered(240, 225, "Recherche en cours...", text, 1);
+  }
+  fillRoundRect(160, 353, 160, 32, 10, rgb565(12, 26, 16));
+  drawRoundRect(160, 353, 160, 32, 10, green);
+  drawTextCentered(240, 362, "RETOUR", text, 1);
+}
+
 void drawScreenNav(uint16_t green, uint16_t text, uint16_t panel) {
-  const char* labels[] = {"HOME", "REGL", "IA"};
-  constexpr int width = 86;
+  const char* labels[] = {"HOME", "REGL", "IA", "GAG NUL", "METEO"};
+  constexpr int width = 68;
   constexpr int height = 32;
-  constexpr int gap = 6;
-  constexpr int startX = 101;
+  constexpr int gap = 4;
+  constexpr int startX = 62;
   constexpr int y = 356;
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 5; ++i) {
     const int x = startX + i * (width + gap);
     const bool active = static_cast<int>(appView) == i;
     blendRoundRect(x, y, width, height, 12, active ? rgb565(4, 28, 18) : rgb565(1, 10, 10), active ? 232 : 210);
     drawRoundRect(x, y, width, height, 12, active ? green : rgb565(20, 58, 38));
-    drawTextCentered(x + width / 2, y + 10, labels[i], active ? green : rgb565(178, 206, 188), 1);
+    drawTextCentered(x + width / 2, y + 10, labels[i], active ? green : rgb565(178, 206, 188), 0);
   }
 }
 
@@ -2122,6 +2266,8 @@ void drawRadarFrame() {
 
   if (appView != AppView::Radar) {
     drawMenuPanel(green, text, panel);
+  } else if (anecdoteOpen) {
+    drawAircraftAnecdote(green, text);
   } else if (selectedPlane >= 0) {
     drawAircraftPopup(green, text, panel);
   } else {
@@ -2384,6 +2530,250 @@ void requestGeminiTest() {
   geminiTestRequested = true;
 }
 
+void copyFrenchForScreen(char* dst, size_t capacity, const char* src) {
+  size_t out = 0;
+  for (const uint8_t* p = reinterpret_cast<const uint8_t*>(src); *p && out + 1 < capacity; ++p) {
+    if (*p == '\n') { dst[out++] = '\n'; continue; }
+    if (*p >= 32 && *p < 127) { dst[out++] = static_cast<char>(*p); continue; }
+    if (*p == 0xC3 && p[1]) {
+      const uint8_t accent = *++p;
+      char replacement = 0;
+      if (accent == 0x80 || accent == 0x82 || accent == 0x84 ||
+          accent == 0xA0 || accent == 0xA2 || accent == 0xA4) replacement = 'a';
+      else if (accent == 0x87 || accent == 0xA7) replacement = 'c';
+      else if ((accent >= 0x88 && accent <= 0x8B) ||
+               (accent >= 0xA8 && accent <= 0xAB)) replacement = 'e';
+      else if ((accent >= 0x8C && accent <= 0x8F) ||
+               (accent >= 0xAC && accent <= 0xAF)) replacement = 'i';
+      else if (accent == 0x94 || accent == 0x96 || accent == 0xB4 || accent == 0xB6) replacement = 'o';
+      else if ((accent >= 0x99 && accent <= 0x9C) ||
+               (accent >= 0xB9 && accent <= 0xBC)) replacement = 'u';
+      if (replacement) dst[out++] = replacement;
+    } else if (*p == 0xE2 && p[1] == 0x80 && p[2]) {
+      p += 2;
+      if (*p == 0x99) dst[out++] = '\'';
+      else if (*p == 0x93 || *p == 0x94) dst[out++] = '-';
+    } else if (*p >= 0xC0 && *p <= 0xDF && p[1]) {
+      ++p;
+    } else if (*p >= 0xE0 && *p <= 0xEF && p[1] && p[2]) {
+      p += 2;
+    }
+  }
+  dst[out] = '\0';
+}
+
+void requestSelectedAnecdote() {
+  if (selectedPlane < 0 || selectedPlane >= aircraftCount()) return;
+  if (anecdoteRequested || anecdoteInProgress) return;
+  AnecdoteRequest request = {};
+  copyClean(request.hex, sizeof(request.hex), selectedHex, "");
+  copyClean(request.callsign, sizeof(request.callsign), planeCallsign(selectedPlane), "VOL");
+  copyClean(request.type, sizeof(request.type), planeType(selectedPlane), "TYPE INCONNU");
+  copyClean(request.route, sizeof(request.route), planeRoute(selectedPlane), "");
+  if (trafficLive) {
+    const LivePlane& plane = livePlanes[selectedPlane];
+    copyClean(request.registration, sizeof(request.registration), plane.registration, "");
+    copyClean(request.airline, sizeof(request.airline), plane.airline, "");
+  }
+  pendingAnecdote = request;
+  copyClean(anecdoteCallsign, sizeof(anecdoteCallsign), request.callsign, "VOL");
+  anecdoteAnswer[0] = '\0';
+  copyClean(anecdoteStatus, sizeof(anecdoteStatus), "GEMINI REFLECHIT...", "");
+  lastAnecdoteHttpCode = 0;
+  anecdoteOpen = true;
+  anecdoteRequested = true;
+}
+
+void fetchAircraftAnecdote(const AnecdoteRequest& plane) {
+  if (!storedGeminiKey[0]) {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "CLE GEMINI ABSENTE", "");
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "WIFI HORS LIGNE", "");
+    return;
+  }
+  if (time(nullptr) < 1700000000) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    const uint32_t started = millis();
+    while (time(nullptr) < 1700000000 && millis() - started < 12000) delay(250);
+    if (time(nullptr) < 1700000000) {
+      copyClean(anecdoteStatus, sizeof(anecdoteStatus), "HORLOGE INDISPONIBLE", "");
+      return;
+    }
+  }
+
+  String prompt = "En francais, donne exactement deux anecdotes courtes sur le modele ou la compagnie de cet avion. "
+                  "Maximum 300 caracteres au total, sans titre ni markdown. "
+                  "N'invente aucun fait sur cet exemplaire, sa destination ou son histoire. "
+                  "Si le modele est inconnu, dis que les donnees sont insuffisantes. ";
+  prompt += "Vol: "; prompt += plane.callsign;
+  prompt += "; type: "; prompt += plane.type;
+  prompt += "; immatriculation: "; prompt += plane.registration;
+  prompt += "; compagnie: "; prompt += plane.airline;
+  prompt += "; route annoncee: "; prompt += plane.route;
+  JsonDocument request;
+  request["contents"][0]["parts"][0]["text"] = prompt;
+  request["generationConfig"]["maxOutputTokens"] = 260;
+  request["generationConfig"]["temperature"] = 0.3;
+  String body;
+  serializeJson(request, body);
+
+  WiFiClientSecure client;
+  client.setCACert(kGoogleRoots);
+  HTTPClient http;
+  http.setTimeout(18000);
+  if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")) {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "CONNEXION IMPOSSIBLE", "");
+    return;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-goog-api-key", storedGeminiKey);
+  const int code = http.POST(body);
+  lastAnecdoteHttpCode = code;
+  if (code == HTTP_CODE_OK) {
+    JsonDocument response;
+    const String payload = http.getString();
+    const DeserializationError error = deserializeJson(response, payload);
+    String answer;
+    if (!error) {
+      for (JsonObject part : response["candidates"][0]["content"]["parts"].as<JsonArray>()) {
+        if (part["thought"] | false) continue;
+        const char* text = part["text"] | "";
+        if (text[0]) { answer += text; answer += '\n'; }
+      }
+    }
+    if (answer.length()) {
+      copyFrenchForScreen(anecdoteAnswer, sizeof(anecdoteAnswer), answer.c_str());
+      copyClean(anecdoteStatus, sizeof(anecdoteStatus), "ANECDOTES GEMINI", "");
+    } else {
+      copyClean(anecdoteStatus, sizeof(anecdoteStatus), "REPONSE GEMINI VIDE", "");
+    }
+  } else if (code == 402) {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "CREDIT GEMINI EPUISE", "");
+  } else if (code == 429) {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "QUOTA GEMINI DEPASSE", "");
+  } else if (code == 400 || code == 401 || code == 403) {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "REQUETE GEMINI REFUSEE", "");
+  } else {
+    copyClean(anecdoteStatus, sizeof(anecdoteStatus), "GEMINI INDISPONIBLE", "");
+  }
+  http.end();
+  Serial.printf("[GEMINI] anecdote HTTP=%d status=%s\n", code, anecdoteStatus);
+}
+
+void requestJoke() {
+  if (jokeRequested || jokeInProgress) return;
+  jokeAnswer[0] = '\0';
+  copyClean(jokeStatus, sizeof(jokeStatus), "GEMINI CHERCHE UN GAG...", "");
+  lastJokeHttpCode = 0;
+  jokeRequested = true;
+}
+
+void fetchJoke() {
+  if (!storedGeminiKey[0] || WiFi.status() != WL_CONNECTED) {
+    copyClean(jokeStatus, sizeof(jokeStatus), storedGeminiKey[0] ? "WIFI HORS LIGNE" : "CLE GEMINI ABSENTE", "");
+    return;
+  }
+  if (time(nullptr) < 1700000000) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    const uint32_t started = millis();
+    while (time(nullptr) < 1700000000 && millis() - started < 12000) delay(250);
+    if (time(nullptr) < 1700000000) {
+      copyClean(jokeStatus, sizeof(jokeStatus), "HORLOGE INDISPONIBLE", "");
+      return;
+    }
+  }
+  JsonDocument request;
+  request["contents"][0]["parts"][0]["text"] =
+      "Raconte une seule blague volontairement tres nulle sur les avions, en francais. "
+      "Deux phrases maximum, 220 caracteres maximum, sans titre, sans markdown ni emoji.";
+  request["generationConfig"]["maxOutputTokens"] = 160;
+  request["generationConfig"]["temperature"] = 0.9;
+  String body;
+  serializeJson(request, body);
+
+  WiFiClientSecure client;
+  client.setCACert(kGoogleRoots);
+  HTTPClient http;
+  http.setTimeout(18000);
+  if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")) {
+    copyClean(jokeStatus, sizeof(jokeStatus), "CONNEXION IMPOSSIBLE", "");
+    return;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-goog-api-key", storedGeminiKey);
+  const int code = http.POST(body);
+  lastJokeHttpCode = code;
+  if (code == HTTP_CODE_OK) {
+    JsonDocument response;
+    const String payload = http.getString();
+    if (!deserializeJson(response, payload)) {
+      const char* answer = response["candidates"][0]["content"]["parts"][0]["text"] | "";
+      copyFrenchForScreen(jokeAnswer, sizeof(jokeAnswer), answer);
+    }
+    copyClean(jokeStatus, sizeof(jokeStatus), jokeAnswer[0] ? "GAG CERTIFIE NUL" : "REPONSE VIDE", "");
+  } else if (code == 402) {
+    copyClean(jokeStatus, sizeof(jokeStatus), "CREDIT GEMINI EPUISE", "");
+  } else if (code == 429) {
+    copyClean(jokeStatus, sizeof(jokeStatus), "QUOTA GEMINI DEPASSE", "");
+  } else {
+    copyClean(jokeStatus, sizeof(jokeStatus), "GEMINI INDISPONIBLE", "");
+  }
+  http.end();
+  Serial.printf("[GEMINI] gag HTTP=%d status=%s\n", code, jokeStatus);
+}
+
+void requestWeather() {
+  if (weatherRequested || weatherInProgress) return;
+  requestedWeatherLat = radarLat;
+  requestedWeatherLon = radarLon;
+  weatherCode = -1;
+  copyClean(weatherStatus, sizeof(weatherStatus), "CHARGEMENT METEO...", "");
+  lastWeatherHttpCode = 0;
+  weatherRequested = true;
+}
+
+void fetchWeather(double lat, double lon) {
+  if (WiFi.status() != WL_CONNECTED) {
+    copyClean(weatherStatus, sizeof(weatherStatus), "WIFI HORS LIGNE", "");
+    return;
+  }
+  char url[240];
+  snprintf(url, sizeof(url),
+           "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&forecast_days=1",
+           lat, lon);
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(12000);
+  if (!http.begin(client, url)) {
+    copyClean(weatherStatus, sizeof(weatherStatus), "CONNEXION IMPOSSIBLE", "");
+    return;
+  }
+  const int code = http.GET();
+  lastWeatherHttpCode = code;
+  if (code == HTTP_CODE_OK) {
+    JsonDocument response;
+    const String payload = http.getString();
+    const DeserializationError error = deserializeJson(response, payload);
+    JsonObject current = response["current"].as<JsonObject>();
+    if (!error && !current.isNull() && !current["weather_code"].isNull()) {
+      weatherTemperatureC = current["temperature_2m"].as<float>();
+      weatherHumidity = current["relative_humidity_2m"].as<int>();
+      weatherWindKmh = current["wind_speed_10m"].as<float>();
+      weatherCode = current["weather_code"].as<int>();
+      copyClean(weatherStatus, sizeof(weatherStatus), "METEO ACTUALISEE", "");
+    } else {
+      copyClean(weatherStatus, sizeof(weatherStatus), "REPONSE METEO INVALIDE", "");
+    }
+  } else {
+    copyClean(weatherStatus, sizeof(weatherStatus), "METEO INDISPONIBLE", "");
+  }
+  http.end();
+  Serial.printf("[METEO] HTTP=%d code=%d\n", code, weatherCode);
+}
+
 void saveLocationSettings() {
   if (!prefs.begin("flightdesk", false)) {
     Serial.println("[LOC] NVS ecriture KO");
@@ -2548,6 +2938,19 @@ void handleStatus() {
   doc["gemini_status"] = geminiStatus;
   doc["gemini_http_code"] = lastGeminiHttpCode;
   doc["gemini_tls_ok"] = geminiTlsOk;
+  doc["anecdote_open"] = anecdoteOpen;
+  doc["anecdote_status"] = anecdoteStatus;
+  doc["anecdote_http_code"] = lastAnecdoteHttpCode;
+  doc["anecdote_answer"] = anecdoteAnswer;
+  doc["joke_status"] = jokeStatus;
+  doc["joke_http_code"] = lastJokeHttpCode;
+  doc["joke_answer"] = jokeAnswer;
+  doc["weather_status"] = weatherStatus;
+  doc["weather_http_code"] = lastWeatherHttpCode;
+  doc["weather_code"] = weatherCode;
+  doc["weather_temperature_c"] = weatherTemperatureC;
+  doc["weather_humidity"] = weatherHumidity;
+  doc["weather_wind_kmh"] = weatherWindKmh;
   doc["setup_portal_active"] = setupPortalActive;
   doc["setup_ap_started"] = setupApStarted;
   doc["setup_ap_clients"] = setupApStarted ? WiFi.softAPgetStationNum() : 0;
@@ -2703,7 +3106,7 @@ bool inRadarCircle(uint16_t x, uint16_t y) {
 }
 
 bool inBottomNav(uint16_t x, uint16_t y) {
-  return inRect(x, y, 93, 344, 314, 58);
+  return inRect(x, y, 58, 344, 364, 58);
 }
 
 void invalidateLiveData() {
@@ -2909,6 +3312,15 @@ void handleTap(uint16_t x, uint16_t y) {
   Serial.printf("[TOUCH] tap x=%u y=%u menu=%d selected=%d\n", x, y, menuOpen, selectedPlane);
 
   if (appView != AppView::Radar) {
+    if (appView == AppView::Joke || appView == AppView::Weather) {
+      if (inRect(x, y, 96, 298, 136, 48)) {
+        if (appView == AppView::Joke) requestJoke();
+        else requestWeather();
+      } else if (inRect(x, y, 248, 298, 120, 48)) {
+        appView = AppView::Radar;
+      }
+      return;
+    }
     if (appView == AppView::Assistant) {
       if (inRect(x, y, 94, 298, 92, 54)) { startWifiPortal(); return; }
       if (inRect(x, y, 192, 298, 92, 54)) { requestGeminiTest(); return; }
@@ -2946,7 +3358,18 @@ void handleTap(uint16_t x, uint16_t y) {
     return;
   }
 
+  if (anecdoteOpen) {
+    if (inRect(x, y, 150, 348, 180, 46) || !inRect(x, y, 48, 82, 384, 316)) {
+      anecdoteOpen = false;
+    }
+    return;
+  }
+
   if (selectedPlane >= 0) {
+    if (inRect(x, y, 282, 291, 116, 40)) {
+      requestSelectedAnecdote();
+      return;
+    }
     if (inRect(x, y, 368, 132, 58, 58) || inRect(x, y, 378, 144, 34, 34)) {
       selectedPlane = -1;
       selectedHex[0] = '\0';
@@ -2959,14 +3382,20 @@ void handleTap(uint16_t x, uint16_t y) {
     return;
   }
 
-  if (inRect(x, y, 93, 344, 314, 58)) {
-    if (x < 191) {
+  if (inBottomNav(x, y)) {
+    if (x < 132) {
       appView = AppView::Radar;
       recenterMap();
-    } else if (x < 283) {
+    } else if (x < 204) {
       appView = AppView::Settings;
-    } else {
+    } else if (x < 276) {
       appView = AppView::Assistant;
+    } else if (x < 348) {
+      appView = AppView::Joke;
+      requestJoke();
+    } else {
+      appView = AppView::Weather;
+      requestWeather();
     }
     selectedPlane = -1;
     return;
@@ -3074,7 +3503,25 @@ void enrichTask(void*) {
 
 void geminiTestTask(void*) {
   for (;;) {
-    if (geminiTestRequested && !geminiTestInProgress) {
+    if (anecdoteRequested && !anecdoteInProgress) {
+      const AnecdoteRequest plane = pendingAnecdote;
+      anecdoteRequested = false;
+      anecdoteInProgress = true;
+      fetchAircraftAnecdote(plane);
+      anecdoteInProgress = false;
+    } else if (jokeRequested && !jokeInProgress) {
+      jokeRequested = false;
+      jokeInProgress = true;
+      fetchJoke();
+      jokeInProgress = false;
+    } else if (weatherRequested && !weatherInProgress) {
+      const double lat = requestedWeatherLat;
+      const double lon = requestedWeatherLon;
+      weatherRequested = false;
+      weatherInProgress = true;
+      fetchWeather(lat, lon);
+      weatherInProgress = false;
+    } else if (geminiTestRequested && !geminiTestInProgress) {
       geminiTestRequested = false;
       geminiTestInProgress = true;
       testGeminiConnection();

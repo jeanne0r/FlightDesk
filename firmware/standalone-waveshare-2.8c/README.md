@@ -31,10 +31,15 @@ au relâchement, puis le trafic est actualisé. Le trafic accepte jusqu'à 512 a
 dans le rayon choisi et conserve les dernières données lors d'une panne temporaire
 de l'API. Les symboles avancent entre deux réponses selon leur cap et leur vitesse.
 Une carte embarquée sert de repli ; les avions de démonstration ne
-s'affichent que sans Wi-Fi. La barre du radar contient HOME, REGL et IA ;
+s'affichent que sans Wi-Fi. La barre du radar contient HOME, REGL, IA, GAG NUL et METEO ;
 HOME recentre la carte. La page Assistant reste une maquette limitée :
 la saisie texte et audio n'est pas encore portée. Elle permet maintenant de
 configurer une clé Gemini et de tester directement la connexion depuis l'ESP32.
+La fiche d'un avion comporte un bouton **DÉTAILS** : il demande à Gemini deux
+anecdotes courtes à partir du type et des autres données connues, puis les affiche
+sur l'écran. Le menu du radar comprend aussi **GAG NUL**, qui demande une blague
+sur l'aviation à Gemini, et **MÉTÉO**, qui affiche les conditions actuelles au
+centre de la carte grâce à Open-Meteo.
 
 ## Configuration Gemini
 
