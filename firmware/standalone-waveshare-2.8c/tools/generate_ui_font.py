@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 OUTPUT = Path(__file__).resolve().parents[1] / "src" / "ui_font.h"
-SIZES = (12, 18, 27)
+SIZES = (9, 12, 18, 27)
 
 
 def make_font(size):

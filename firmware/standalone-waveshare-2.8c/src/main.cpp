@@ -125,8 +125,47 @@ bool trafficLive = false;
 bool trafficFetchFailed = false;
 int lastTrafficHttpCode = 0;
 int lastTrafficReceived = 0;
+int lastTrafficApiTotal = 0;
+int lastTrafficRawHexCount = 0;
 int lastTrafficPayloadBytes = 0;
+bool lastTrafficJsonOverflow = false;
 char lastTrafficProvider[20] = "";
+
+class SpiRamJsonAllocator : public ArduinoJson::Allocator {
+ public:
+  void* allocate(size_t size) override {
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  void deallocate(void* ptr) override { heap_caps_free(ptr); }
+  void* reallocate(void* ptr, size_t size) override {
+    return heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+};
+SpiRamJsonAllocator trafficJsonAllocator;
+constexpr size_t kTrafficPayloadCapacity = 512 * 1024;
+char* trafficPayloadBuffer = nullptr;
+
+class TrafficPayloadStream : public Stream {
+ public:
+  TrafficPayloadStream(char* data, size_t capacity) : data_(data), capacity_(capacity) {}
+  size_t write(uint8_t value) override { return write(&value, 1); }
+  size_t write(const uint8_t* data, size_t size) override {
+    if (size > capacity_ - length_) return 0;
+    memcpy(data_ + length_, data, size);
+    length_ += size;
+    return size;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  size_t length() const { return length_; }
+
+ private:
+  char* data_;
+  size_t capacity_;
+  size_t length_ = 0;
+};
 volatile bool trafficFetchRequested = false;
 volatile bool trafficFetchInProgress = false;
 volatile bool trafficFrameDirty = false;
@@ -901,6 +940,7 @@ void fetchMapTiles() {
   Serial.printf("[MAP] Fetch OSM z=%d center=%.5f,%.5f npa=%s\n", zoom, centerLat, centerLon, currentPostal);
   for (int ty = minTileY; ty <= maxTileY; ++ty) {
     for (int tx = minTileX; tx <= maxTileX; ++tx) {
+      if (startedGeneration != mapGeneration || mapDragging) break;
       const int screenX = static_cast<int>(round(tx * 256.0 - topLeftX));
       const int screenY = static_cast<int>(round(ty * 256.0 - topLeftY));
       ++total;
@@ -909,6 +949,7 @@ void fetchMapTiles() {
       }
       delay(80);
     }
+    if (startedGeneration != mapGeneration || mapDragging) break;
   }
   lastMapTilesLoaded = ok;
   lastMapTilesRequested = total;
@@ -1112,7 +1153,8 @@ void animateLivePlanePositions(uint32_t now, uint32_t stepMs) {
   }
 }
 
-bool fetchTrafficPayload(const char* provider, const char* url, String& payload) {
+bool fetchTrafficPayload(const char* provider, const char* url, size_t& payloadLength) {
+  if (!trafficPayloadBuffer) return false;
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
@@ -1129,9 +1171,18 @@ bool fetchTrafficPayload(const char* provider, const char* url, String& payload)
     http.end();
     return false;
   }
-  payload = http.getString();
+  TrafficPayloadStream payload(trafficPayloadBuffer, kTrafficPayloadCapacity);
+  const int received = http.writeToStream(&payload);
   http.end();
-  Serial.printf("[TRAFFIC] payload OK via %s bytes=%u\n", provider, payload.length());
+  if (received < 0 || static_cast<size_t>(received) != payload.length()) {
+    Serial.printf("[TRAFFIC] %s body KO code=%d bytes=%u\n", provider, received,
+                  static_cast<unsigned>(payload.length()));
+    return false;
+  }
+  payloadLength = payload.length();
+  trafficPayloadBuffer[payloadLength] = '\0';
+  Serial.printf("[TRAFFIC] payload OK via %s bytes=%u\n", provider,
+                static_cast<unsigned>(payloadLength));
   return true;
 }
 
@@ -1152,17 +1203,17 @@ void fetchTraffic() {
   snprintf(url[2], sizeof(url[2]), "https://api.airplanes.live/v2/point/%.5f/%.5f/%d",
            radarLat, radarLon, radiusNm);
 
-  String payload;
+  size_t payloadLength = 0;
   const char* provider = nullptr;
   const uint32_t generation = mapGeneration;
   const double requestedLat = radarLat;
   const double requestedLon = radarLon;
   const int requestedRange = radarRangeKm;
-  if (fetchTrafficPayload("adsb.fi", url[0], payload)) {
+  if (fetchTrafficPayload("adsb.fi", url[0], payloadLength)) {
     provider = "adsb.fi";
-  } else if (fetchTrafficPayload("adsb.lol", url[1], payload)) {
+  } else if (fetchTrafficPayload("adsb.lol", url[1], payloadLength)) {
     provider = "adsb.lol";
-  } else if (fetchTrafficPayload("airplanes.live", url[2], payload)) {
+  } else if (fetchTrafficPayload("airplanes.live", url[2], payloadLength)) {
     provider = "airplanes.live";
   } else {
     trafficFetchFailed = true;
@@ -1171,7 +1222,11 @@ void fetchTraffic() {
     return;
   }
 
-  lastTrafficPayloadBytes = payload.length();
+  lastTrafficPayloadBytes = payloadLength;
+  lastTrafficRawHexCount = 0;
+  for (size_t pos = 0; pos + 6 <= payloadLength; ++pos) {
+    if (memcmp(trafficPayloadBuffer + pos, "\"hex\":", 6) == 0) ++lastTrafficRawHexCount;
+  }
   JsonDocument filter;
   const char* fields[] = {"lat", "lon", "track", "true_heading", "hex", "flight", "r",
                           "t", "desc", "route", "alt_baro", "alt_geom", "gs"};
@@ -1179,17 +1234,22 @@ void fetchTraffic() {
     filter["ac"][0][field] = true;
     filter["aircraft"][0][field] = true;
   }
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-  if (err) {
+  filter["total"] = true;
+  JsonDocument doc(&trafficJsonAllocator);
+  DeserializationError err = deserializeJson(doc, trafficPayloadBuffer, payloadLength,
+                                              DeserializationOption::Filter(filter));
+  lastTrafficJsonOverflow = doc.overflowed();
+  if (err || lastTrafficJsonOverflow) {
     trafficFetchFailed = true;
-    Serial.printf("[TRAFFIC] JSON KO %s bytes=%u\n", err.c_str(), payload.length());
+    Serial.printf("[TRAFFIC] JSON KO %s overflow=%d bytes=%u\n", err.c_str(),
+                  lastTrafficJsonOverflow, static_cast<unsigned>(payloadLength));
     return;
   }
 
   JsonArray aircraft = doc["ac"].as<JsonArray>();
   if (aircraft.isNull()) aircraft = doc["aircraft"].as<JsonArray>();
   lastTrafficReceived = aircraft.size();
+  lastTrafficApiTotal = doc["total"] | 0;
   int count = 0;
   for (JsonObject ac : aircraft) {
     if (count >= kMaxLivePlanes) break;
@@ -1555,7 +1615,9 @@ uint8_t glyphRow(char c, int row) {
 }
 
 int textWidth(const char* text, int scale) {
-  const UiGlyph* glyphs = scale >= 3 ? kUiGlyphs27 : (scale == 2 ? kUiGlyphs18 : kUiGlyphs12);
+  const UiGlyph* glyphs = scale >= 3 ? kUiGlyphs27 :
+                          scale == 2 ? kUiGlyphs18 :
+                          scale == 1 ? kUiGlyphs12 : kUiGlyphs9;
   int width = 0;
   for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c; ++c) {
     const int index = *c >= 32 && *c <= 126 ? *c - 32 : '?' - 32;
@@ -1567,8 +1629,12 @@ int textWidth(const char* text, int scale) {
 }
 
 void drawText(int x, int y, const char* text, uint16_t color, int scale = 1) {
-  const UiGlyph* glyphs = scale >= 3 ? kUiGlyphs27 : (scale == 2 ? kUiGlyphs18 : kUiGlyphs12);
-  const uint8_t* pixels = scale >= 3 ? kUiPixels27 : (scale == 2 ? kUiPixels18 : kUiPixels12);
+  const UiGlyph* glyphs = scale >= 3 ? kUiGlyphs27 :
+                          scale == 2 ? kUiGlyphs18 :
+                          scale == 1 ? kUiGlyphs12 : kUiGlyphs9;
+  const uint8_t* pixels = scale >= 3 ? kUiPixels27 :
+                          scale == 2 ? kUiPixels18 :
+                          scale == 1 ? kUiPixels12 : kUiPixels9;
   for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c; ++c) {
     const int index = *c >= 32 && *c <= 126 ? *c - 32 : '?' - 32;
     UiGlyph glyph;
@@ -1916,7 +1982,7 @@ void buildRadarBaseFrame() {
               cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 23);
   }
 
-  drawTextCentered(cx, 42, "(c) OpenStreetMap contributors", rgb565(92, 151, 96), 1);
+  drawTextCentered(cx, 24, "(c) OpenStreetMap contributors", rgb565(100, 159, 107), 0);
 
   frame = drawFrame;
   radarBaseDirty = false;
@@ -2257,6 +2323,9 @@ void handleStatus() {
   doc["traffic_live"] = trafficLive;
   doc["aircraft_visible"] = visibleAircraftCount();
   doc["traffic_received"] = lastTrafficReceived;
+  doc["traffic_api_total"] = lastTrafficApiTotal;
+  doc["traffic_raw_hex_count"] = lastTrafficRawHexCount;
+  doc["traffic_json_overflow"] = lastTrafficJsonOverflow;
   doc["traffic_capacity"] = kMaxLivePlanes;
   doc["traffic_provider"] = lastTrafficProvider;
   doc["traffic_http_code"] = lastTrafficHttpCode;
@@ -2837,7 +2906,6 @@ void requestTrafficFetch() {
 }
 
 void requestMapFetch() {
-  if (mapFetchInProgress || mapFetchRequested) return;
   mapFetchRequested = true;
 }
 
@@ -2868,9 +2936,12 @@ void setup() {
                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   fetchedPlanes = static_cast<LivePlane*>(heap_caps_calloc(kMaxLivePlanes, sizeof(LivePlane),
                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  trafficPayloadBuffer = static_cast<char*>(heap_caps_malloc(kTrafficPayloadCapacity + 1,
+                                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!livePlanes || !fetchedPlanes) {
     Serial.println("[TRAFFIC] PSRAM plane buffers KO");
   }
+  if (!trafficPayloadBuffer) Serial.println("[TRAFFIC] PSRAM payload buffer KO");
   tileCacheReady = LittleFS.begin(true);
   initTouch();
   initImu();
