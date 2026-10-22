@@ -1659,6 +1659,36 @@ void drawTextCentered(int cx, int y, const char* text, uint16_t color, int scale
   drawText(cx - textWidth(text, scale) / 2, y, text, color, scale);
 }
 
+void drawTextOnUpperArc(int cx, int cy, int radius, const char* text, uint16_t color) {
+  const float totalWidth = static_cast<float>(textWidth(text, 0));
+  float advance = -totalWidth / 2.0f;
+  for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c; ++c) {
+    const int index = *c >= 32 && *c <= 126 ? *c - 32 : '?' - 32;
+    UiGlyph glyph;
+    memcpy_P(&glyph, &kUiGlyphs9[index], sizeof(glyph));
+    const float angle = (advance + glyph.advance / 2.0f) / radius;
+    const float sine = sinf(angle);
+    const float cosine = cosf(angle);
+    const float originX = cx + radius * sine;
+    const float originY = cy - radius * cosine;
+    for (int row = 0; row < glyph.height; ++row) {
+      for (int col = 0; col < glyph.width; ++col) {
+        const int pixel = row * glyph.width + col;
+        const uint8_t packed = pgm_read_byte(&kUiPixels9[glyph.offset + pixel / 2]);
+        const uint8_t level = pixel & 1 ? packed & 0x0F : packed >> 4;
+        if (!level) continue;
+        const float localX = glyph.x + col - glyph.advance / 2.0f;
+        const float localY = glyph.y + row - 5.0f;
+        const int x = static_cast<int>(roundf(originX + localX * cosine - localY * sine));
+        const int y = static_cast<int>(roundf(originY + localX * sine + localY * cosine));
+        if (level == 15) putPixel(x, y, color);
+        else blendPixel(x, y, color, level * 17);
+      }
+    }
+    advance += glyph.advance;
+  }
+}
+
 void drawPolyline(const int points[][2], int count, uint16_t color, int thickness = 1) {
   for (int i = 0; i < count - 1; ++i) {
     if (thickness > 1) {
@@ -1982,7 +2012,7 @@ void buildRadarBaseFrame() {
               cx + cosf(rad) * r, cy + sinf(rad) * r, softGreen, 23);
   }
 
-  drawTextCentered(cx, 24, "(c) OpenStreetMap contributors", rgb565(100, 159, 107), 0);
+  drawTextOnUpperArc(cx, cy, 216, "(c) OpenStreetMap contributors", rgb565(100, 159, 107));
 
   frame = drawFrame;
   radarBaseDirty = false;
