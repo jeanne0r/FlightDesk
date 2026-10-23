@@ -36,7 +36,11 @@ Before compiling, set `flightdesk_base_url` to the machine running
 - One `MENU` control instead of several tiny bottom buttons.
 - Menu pages for settings, map controls, range and recenter.
 - Aircraft popup with callsign, type, route city names and photo when available.
-- Tap the aircraft popup to ask the AI for a compact selected-flight summary.
+- Tap **DÉTAILS** on the aircraft popup for two short Gemini anecdotes.
+- The server-rendered FlightDesk preview now includes **DÉTAILS** on aircraft,
+  **ENCORE** for more anecdotes, **GAG NUL** with a persistent duplicate check,
+  and **MÉTÉO** with three daily forecasts. Gemini features require
+  `GEMINI_API_KEY` in the simulator environment.
 - The `IA` menu button asks for a compact traffic summary around the configured
   postal code.
 - Server-side fallbacks if the traffic provider or photo provider is temporarily

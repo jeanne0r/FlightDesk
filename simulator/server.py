@@ -3,10 +3,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from math import atan2, cos, floor, log, log2, pi, radians, sin, sqrt, tan
 from time import time
+from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 import json
+import hashlib
+import unicodedata
 import os
 import re
 
@@ -36,6 +39,7 @@ ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 USER_AGENT = "FlightDesk/0.1 (+https://github.com/jeanne0r/FlightDesk/issues)"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 TRAFFIC_CACHE_SECONDS = 30
@@ -52,6 +56,9 @@ route_cache = {}
 tile_cache = {}
 photo_cache = {}
 ai_cache = {}
+weather_cache = {}
+joke_lock = Lock()
+joke_store_path = os.path.join(os.path.dirname(__file__), ".xiaozhi-jokes.json")
 esp32_state = {
     "lat": 46.5197,
     "lon": 6.6323,
@@ -68,6 +75,14 @@ esp32_state = {
     "ai_answer": "Touchez un avion, puis la fiche pour demander une analyse.",
     "ai_question": "Infos du vol sélectionné",
     "ai_status": "idle",
+    "anecdote_aircraft": None,
+    "anecdote_answer": "",
+    "anecdote_previous": "",
+    "anecdote_status": "",
+    "joke_answer": "",
+    "joke_status": "",
+    "weather": None,
+    "weather_status": "",
 }
 
 
@@ -600,19 +615,49 @@ def serializable_esp32_state():
         "ai_answer": esp32_state["ai_answer"],
         "ai_question": esp32_state["ai_question"],
         "ai_status": esp32_state["ai_status"],
+        "anecdote_status": esp32_state["anecdote_status"],
+        "anecdote_answer": esp32_state["anecdote_answer"],
+        "joke_status": esp32_state["joke_status"],
+        "joke_answer": esp32_state["joke_answer"],
+        "weather_status": esp32_state["weather_status"],
+        "weather": esp32_state["weather"],
     }
 
 
 def handle_esp32_tap(x, y):
-    if esp32_state["selected_id"]:
+    if esp32_state["mode"] == "anecdotes":
+        if 32 <= x <= 112 and 168 <= y <= 196:
+            update_esp32_anecdote(more=True)
+        elif 128 <= x <= 208 and 168 <= y <= 196:
+            esp32_state["mode"] = "radar"
+        return
+
+    if esp32_state["mode"] == "joke":
+        if 32 <= x <= 112 and 168 <= y <= 196:
+            update_esp32_joke()
+        elif 128 <= x <= 208 and 168 <= y <= 196:
+            esp32_state["mode"] = "radar"
+        return
+
+    if esp32_state["mode"] == "weather":
+        if 32 <= x <= 112 and 168 <= y <= 196:
+            update_esp32_weather(force=True)
+        elif 128 <= x <= 208 and 168 <= y <= 196:
+            esp32_state["mode"] = "radar"
+        return
+
+    if esp32_state["mode"] == "radar" and esp32_state["selected_id"]:
         if 156 <= x <= 188 and 74 <= y <= 108:
             esp32_state["favorites"].add(esp32_state["selected_id"])
             return
         if 190 <= x <= 224 and 74 <= y <= 108:
             esp32_state["selected_id"] = None
             return
-        if 20 <= x <= 220 and 72 <= y <= 184:
-            update_esp32_ai_answer(selected_only=True)
+        if 72 <= x <= 168 and 170 <= y <= 196:
+            selected = find_aircraft_by_id(esp32_state["last_aircraft"], esp32_state["selected_id"])
+            if selected:
+                esp32_state["anecdote_aircraft"] = selected.copy()
+                update_esp32_anecdote(more=False)
             return
 
     if 88 <= x <= 152 and 194 <= y <= 226:
@@ -623,10 +668,12 @@ def handle_esp32_tap(x, y):
     if esp32_state["mode"] == "menu":
         menu_targets = [
             ("radar", 72, 60, 168, 92),
-            ("settings", 28, 105, 112, 139),
-            ("map", 128, 105, 212, 139),
-            ("recenter", 28, 150, 112, 184),
-            ("assistant", 128, 150, 212, 184),
+            ("settings", 28, 96, 112, 123),
+            ("map", 128, 96, 212, 123),
+            ("recenter", 28, 130, 112, 157),
+            ("assistant", 128, 130, 212, 157),
+            ("joke", 28, 164, 112, 191),
+            ("weather", 128, 164, 212, 191),
         ]
         for mode, x1, y1, x2, y2 in menu_targets:
             if x1 <= x <= x2 and y1 <= y <= y2:
@@ -636,6 +683,10 @@ def handle_esp32_tap(x, y):
                     esp32_state["mode"] = "radar"
                 elif mode == "assistant":
                     update_esp32_ai_answer(selected_only=False)
+                elif mode == "joke":
+                    update_esp32_joke()
+                elif mode == "weather":
+                    update_esp32_weather()
                 else:
                     esp32_state["mode"] = mode
                 esp32_state["selected_id"] = None
@@ -782,6 +833,123 @@ def update_esp32_ai_answer(selected_only):
     esp32_state["mode"] = "assistant"
 
 
+def update_esp32_anecdote(more=False):
+    aircraft = esp32_state.get("anecdote_aircraft")
+    if not aircraft:
+        return
+    if more:
+        esp32_state["anecdote_previous"] = esp32_state.get("anecdote_answer") or esp32_state.get("anecdote_previous") or ""
+    else:
+        esp32_state["anecdote_previous"] = ""
+    esp32_state["anecdote_status"] = "GEMINI RÉFLÉCHIT..."
+    esp32_state["anecdote_answer"] = ""
+    esp32_state["mode"] = "anecdotes"
+    details = lookup_aircraft_details_for_png(aircraft)
+    context = {
+        "instruction": "En français, donne exactement deux anecdotes courtes et factuelles sur le modèle ou la compagnie. 230 caractères au total. Ne déduis rien de particulier sur cet exemplaire. Pas de titre ni markdown.",
+        "aircraft": enrich_aircraft_for_ai(aircraft, details),
+        "previous_anecdotes_to_avoid": esp32_state["anecdote_previous"],
+    }
+    answer = call_gemini(context, 230, temperature=0.5)
+    if answer:
+        esp32_state["anecdote_answer"] = clipped_chars(answer, 230)
+        esp32_state["anecdote_status"] = "ANECDOTES GEMINI"
+    else:
+        esp32_state["anecdote_status"] = "GEMINI INDISPONIBLE"
+
+
+def load_xiaozhi_jokes():
+    try:
+        with open(joke_store_path, "r", encoding="utf-8") as stored:
+            jokes = json.load(stored)
+        return [str(joke) for joke in jokes if isinstance(joke, str)][-128:]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def joke_signature(joke):
+    plain = unicodedata.normalize("NFKD", joke.casefold())
+    plain = "".join(char for char in plain if char.isalnum() and not unicodedata.combining(char))
+    return hashlib.sha256(plain.encode()).hexdigest()
+
+
+def update_esp32_joke():
+    esp32_state["mode"] = "joke"
+    esp32_state["joke_answer"] = ""
+    esp32_state["joke_status"] = "GEMINI CHERCHE UN GAG..."
+    with joke_lock:
+        jokes = load_xiaozhi_jokes()
+        seen = {joke_signature(joke) for joke in jokes}
+        for attempt in range(2):
+            context = {
+                "instruction": "Invente une seule blague volontairement très nulle sur les avions, en français. Deux phrases et 220 caractères au maximum, sans titre ni emoji. Nouvelle chute obligatoire.",
+                "recent_jokes_to_avoid": jokes[-8:],
+                "attempt": attempt + 1,
+            }
+            answer = call_gemini(context, 220, temperature=1.0)
+            if not answer:
+                esp32_state["joke_status"] = "GEMINI INDISPONIBLE"
+                return
+            answer = clipped_chars(answer, 220)
+            fingerprint = joke_signature(answer)
+            if fingerprint in seen:
+                continue
+            jokes = (jokes + [answer])[-128:]
+            temporary = joke_store_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as stored:
+                json.dump(jokes, stored, ensure_ascii=False)
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, joke_store_path)
+            esp32_state["joke_answer"] = answer
+            esp32_state["joke_status"] = "GAG CERTIFIÉ NUL"
+            return
+        esp32_state["joke_status"] = "GAG DÉJÀ ENTENDU"
+
+
+def update_esp32_weather(force=False):
+    esp32_state["mode"] = "weather"
+    esp32_state["weather_status"] = "CHARGEMENT MÉTÉO..."
+    lat, lon = esp32_state["lat"], esp32_state["lon"]
+    key = (round(lat, 3), round(lon, 3))
+    cached = weather_cache.get(key)
+    if cached and not force and time() - cached["time"] < 600:
+        esp32_state["weather"] = cached["weather"]
+        esp32_state["weather_status"] = "MÉTÉO ACTUALISÉE"
+        return
+    params = urlencode({
+        "latitude": f"{lat:.5f}", "longitude": f"{lon:.5f}",
+        "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code",
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        "timezone": "auto", "forecast_days": "4",
+    })
+    try:
+        with urlopen(Request(f"{OPEN_METEO_URL}?{params}", headers={"User-Agent": USER_AGENT}), timeout=10) as response:
+            payload = json.load(response)
+        current = payload["current"]
+        daily = payload["daily"]
+        forecast = []
+        for index in range(1, 4):
+            forecast.append({
+                "date": daily["time"][index][8:10] + "/" + daily["time"][index][5:7],
+                "code": int(daily["weather_code"][index]),
+                "high": float(daily["temperature_2m_max"][index]),
+                "low": float(daily["temperature_2m_min"][index]),
+                "rain": int(daily["precipitation_probability_max"][index]),
+            })
+        weather = {"current": {
+            "temperature": float(current["temperature_2m"]),
+            "humidity": int(current["relative_humidity_2m"]),
+            "wind": float(current["wind_speed_10m"]),
+            "code": int(current["weather_code"]),
+        }, "forecast": forecast}
+        weather_cache[key] = {"time": time(), "weather": weather}
+        esp32_state["weather"] = weather
+        esp32_state["weather_status"] = "MÉTÉO ACTUALISÉE"
+    except (HTTPError, URLError, TimeoutError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        esp32_state["weather"] = None
+        esp32_state["weather_status"] = "MÉTÉO INDISPONIBLE"
+
+
 def answer_ai_question(question, lat, lon, range_km, postal_code, place, selected_id=None, max_chars=520):
     cache_key = (question, round(lat, 3), round(lon, 3), round(range_km), postal_code, selected_id)
     cached = ai_cache.get(cache_key)
@@ -872,7 +1040,7 @@ def enrich_aircraft_for_ai(aircraft, details):
     }
 
 
-def call_gemini(context, max_chars):
+def call_gemini(context, max_chars, temperature=0.2):
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         return None
@@ -882,7 +1050,7 @@ def call_gemini(context, max_chars):
             "parts": [{"text": json.dumps(context, ensure_ascii=False)}],
         }],
         "generationConfig": {
-            "temperature": 0.2,
+            "temperature": temperature,
             "maxOutputTokens": min(220, max(80, int(max_chars / 2))),
         },
     }).encode("utf-8")
@@ -1127,7 +1295,7 @@ def render_radar_png(aircraft, state, source):
     elif state["mode"] != "radar":
         draw_mode_panel(draw, state["mode"], font_small, font_mid)
 
-    selected = next((item for item in aircraft if item["id"] == state["selected_id"]), None)
+    selected = next((item for item in aircraft if item["id"] == state["selected_id"]), None) if state["mode"] == "radar" else None
     if selected:
         draw_aircraft_popup(glow, draw, selected, state, font_tiny, font_small, font_mid, font_title)
     else:
@@ -1153,15 +1321,17 @@ def draw_menu_button(draw, active_mode, font):
 
 
 def draw_menu_panel(draw, state, font_small, font_mid):
-    panel = (24, 52, 216, 188)
+    panel = (24, 52, 216, 194)
     draw.rounded_rectangle(panel, radius=18, fill=(2, 9, 5, 226), outline=(82, 224, 121, 150), width=2)
     draw.text((120, 75), "MENU", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
     items = [
         ("RADAR", 72, 60, 168, 92),
-        ("RÉGLAGES", 28, 105, 112, 139),
-        ("CARTE", 128, 105, 212, 139),
-        ("CENTRER", 28, 150, 112, 184),
-        ("IA", 128, 150, 212, 184),
+        ("RÉGLAGES", 28, 96, 112, 123),
+        ("CARTE", 128, 96, 212, 123),
+        ("CENTRER", 28, 130, 112, 157),
+        ("IA", 128, 130, 212, 157),
+        ("GAG NUL", 28, 164, 112, 191),
+        ("MÉTÉO", 128, 164, 212, 191),
     ]
     for label, x1, y1, x2, y2 in items:
         active = label == "RADAR" and state["mode"] == "radar"
@@ -1169,7 +1339,57 @@ def draw_menu_panel(draw, state, font_small, font_mid):
         draw.text(((x1 + x2) / 2, (y1 + y2) / 2), label, fill=(141, 255, 111, 240) if active else (235, 242, 236, 190), font=font_small, anchor="mm")
 
 
+def weather_code_label(code):
+    if code == 0:
+        return "SOLEIL"
+    if code in (1, 2, 3):
+        return "NUAGES"
+    if code in (45, 48):
+        return "BROUILL."
+    if code in (71, 73, 75, 77, 85, 86):
+        return "NEIGE"
+    if code is not None and code >= 95:
+        return "ORAGE"
+    if code is not None and 51 <= code <= 82:
+        return "PLUIE"
+    return "VARIABLE"
+
+
+def draw_feature_panel(draw, mode, font_small, font_mid):
+    tiny = load_font(8)
+    draw.rounded_rectangle((20, 47, 220, 198), radius=17, fill=(2, 9, 5, 235), outline=(82, 224, 121, 170), width=2)
+    title = {"anecdotes": "ANECDOTES", "joke": "GAG NUL", "weather": "MÉTÉO"}[mode]
+    draw.text((120, 66), title, fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
+    if mode == "weather":
+        weather = esp32_state.get("weather") or {}
+        current = weather.get("current") or {}
+        if current:
+            line = f"{current['temperature']:.1f}°C  {weather_code_label(current['code'])}"
+            draw.text((120, 85), line, fill=(238, 244, 239, 235), font=font_small, anchor="mm")
+            draw.text((120, 100), f"Hum {current['humidity']}%  Vent {current['wind']:.0f} km/h", fill=(238, 244, 239, 190), font=tiny, anchor="mm")
+            for index, day in enumerate(weather.get("forecast") or []):
+                y = 120 + index * 16
+                draw.text((34, y), day["date"], fill=(141, 255, 111, 235), font=tiny, anchor="lm")
+                draw.text((73, y), weather_code_label(day["code"]), fill=(238, 244, 239, 195), font=tiny, anchor="lm")
+                draw.text((138, y), f"{day['high']:.0f}/{day['low']:.0f}°", fill=(238, 244, 239, 220), font=tiny, anchor="lm")
+                draw.text((202, y), f"{day['rain']}%", fill=(141, 255, 111, 220), font=tiny, anchor="rm")
+            draw.text((120, 164), "Open-Meteo", fill=(141, 255, 111, 170), font=tiny, anchor="mm")
+        else:
+            draw.text((120, 112), clipped(esp32_state.get("weather_status"), 26), fill=(238, 244, 239, 215), font=font_small, anchor="mm")
+    else:
+        answer = esp32_state.get("anecdote_answer" if mode == "anecdotes" else "joke_answer") or ""
+        status = esp32_state.get("anecdote_status" if mode == "anecdotes" else "joke_status") or ""
+        draw.text((120, 84), clipped(status, 30), fill=(141, 255, 111, 195), font=tiny, anchor="mm")
+        wrapped_text(draw, answer or status, (34, 103), 172, font_small, (238, 244, 239, 215), max_lines=5, line_height=14)
+    for label, box in (("ENCORE" if mode != "weather" else "ACTUALISER", (32, 174, 112, 196)), ("RETOUR", (128, 174, 208, 196))):
+        draw.rounded_rectangle(box, radius=9, fill=(82, 224, 121, 28), outline=(141, 255, 111, 130), width=1)
+        draw.text(((box[0] + box[2]) / 2, 185), label, fill=(238, 244, 239, 225), font=tiny, anchor="mm")
+
+
 def draw_mode_panel(draw, mode, font_small, font_mid):
+    if mode in {"anecdotes", "joke", "weather"}:
+        draw_feature_panel(draw, mode, font_small, font_mid)
+        return
     if mode == "assistant":
         draw.rounded_rectangle((22, 47, 218, 190), radius=18, fill=(2, 9, 5, 232), outline=(82, 224, 121, 145), width=2)
         draw.text((120, 67), "ASSISTANT IA", fill=(141, 255, 111, 240), font=font_mid, anchor="mm")
@@ -1300,7 +1520,8 @@ def draw_aircraft_popup(overlay, draw, aircraft, state, font_tiny, font_small, f
     else:
         draw.text((34, 152), f"{round(aircraft['distance'])} km  {round(aircraft['speed'])} km/h", fill=(238, 244, 239, 178), font=font_tiny, anchor="lm")
     draw.text((34, 170), f"{round(aircraft['altitude'] or 0)} m  {round(aircraft['heading'] or 0)}°", fill=(238, 244, 239, 165), font=font_tiny, anchor="lm")
-    draw.text((120, 179), "TOUCHER LA FICHE = IA", fill=(141, 255, 111, 145), font=font_tiny, anchor="mm")
+    draw.rounded_rectangle((74, 174, 166, 196), radius=9, fill=(16, 48, 23, 235), outline=(141, 255, 111, 200), width=1)
+    draw.text((120, 185), "DÉTAILS", fill=(235, 255, 230, 240), font=font_tiny, anchor="mm")
     draw.rounded_rectangle((158, 82, 184, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)
     draw.text((171, 94), "★", fill=(141, 255, 111, 230), font=font_small, anchor="mm")
     draw.rounded_rectangle((188, 82, 214, 108), radius=13, fill=(82, 224, 121, 30), outline=(141, 255, 111, 140), width=1)

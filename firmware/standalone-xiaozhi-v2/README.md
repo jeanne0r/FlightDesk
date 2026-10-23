@@ -54,7 +54,12 @@ This standalone firmware includes ArduinoOTA with hostname
 - CST816 touch handling.
 - Range menu: 20, 50, 100, 250 km.
 - Selected-aircraft popup.
-- Gemini summary for the selected aircraft or nearby traffic.
+- **DÉTAILS** on an aircraft opens two Gemini anecdotes; **ENCORE** requests more.
+- **GAG NUL** in the menu generates a new aviation joke and rejects text repeats
+  from the last 128 jokes, including across reboots.
+- **MÉTÉO** shows current conditions and a three-day forecast from Open-Meteo.
+- Gemini voice assistant for nearby traffic.
+- Gemini key setup on `http://<xiaozhi-ip>/ai`; the key is stored on the device.
 - Local stylized green map watermark.
 - ArduinoOTA for later standalone updates.
 

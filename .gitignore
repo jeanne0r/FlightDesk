@@ -8,5 +8,7 @@ firmware/standalone-xiaozhi-v2/include/secrets.h
 firmware/standalone-waveshare-2.8c/include/secrets.h
 firmware/esphome/**/secrets.yaml
 simulator/.env
+simulator/.xiaozhi-jokes.json
+simulator/.xiaozhi-jokes.json.tmp
 *.zip
 __pycache__/

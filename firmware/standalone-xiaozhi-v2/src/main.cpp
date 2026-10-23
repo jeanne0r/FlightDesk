@@ -3,6 +3,8 @@
 #include <ArduinoOTA.h>
 #include <HTTPClient.h>
 #include <JPEGDEC.h>
+#include <Preferences.h>
+#include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
@@ -16,6 +18,7 @@
 #include <Codecs/es8311/ES8311.h>
 #include <math.h>
 #include <new>
+#include "google_roots.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -73,6 +76,8 @@ Arduino_DataBus *bus = new Arduino_ESP32SPI(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK,
 Arduino_GFX *display = new Arduino_GC9A01(bus, PIN_LCD_RST, 0, true);
 Arduino_Canvas *canvas = new Arduino_Canvas(SCREEN, SCREEN, display);
 Arduino_GFX *gfx = canvas;
+Preferences prefs;
+WebServer config_server(80);
 JPEGDEC photo_jpeg;
 AudioGeneratorMP3 *speech_mp3 = nullptr;
 AudioFileSourceHTTPStream *speech_file = nullptr;
@@ -129,6 +134,34 @@ String speech_url;
 String pending_speech_text;
 uint32_t pending_speech_ms = 0;
 bool ai_busy = false;
+String gemini_key;
+Aircraft anecdote_aircraft;
+String anecdote_answer;
+String previous_anecdote;
+String anecdote_status;
+String joke_answer;
+String joke_status;
+constexpr int JOKE_HISTORY_SIZE = 8;
+String joke_history[JOKE_HISTORY_SIZE];
+int joke_history_count = 0;
+constexpr int JOKE_FINGERPRINT_COUNT = 128;
+uint64_t joke_fingerprints[JOKE_FINGERPRINT_COUNT] = {};
+int joke_fingerprint_used = 0;
+int joke_fingerprint_next = 0;
+struct ForecastDay {
+  String date;
+  int code = -1;
+  float high = 0;
+  float low = 0;
+  int rain = 0;
+};
+ForecastDay forecast[3];
+int forecast_count = 0;
+float weather_temperature = 0;
+float weather_wind = 0;
+int weather_humidity = 0;
+int weather_code = -1;
+String weather_status;
 int last_mic_peak = 0;
 int last_mic_rms = 0;
 
@@ -204,6 +237,121 @@ String jsonQuote(const String &text) {
   }
   encoded += "\"";
   return encoded;
+}
+
+uint64_t jokeFingerprint(const String &joke) {
+  uint64_t hash = 14695981039346656037ULL;
+  String normalized = joke;
+  normalized.replace("à", "a"); normalized.replace("â", "a"); normalized.replace("ä", "a");
+  normalized.replace("ç", "c"); normalized.replace("é", "e"); normalized.replace("è", "e");
+  normalized.replace("ê", "e"); normalized.replace("ë", "e"); normalized.replace("î", "i");
+  normalized.replace("ï", "i"); normalized.replace("ô", "o"); normalized.replace("ö", "o");
+  normalized.replace("ù", "u"); normalized.replace("û", "u"); normalized.replace("ü", "u");
+  for (size_t i = 0; i < normalized.length(); ++i) {
+    char c = normalized[i];
+    if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) continue;
+    hash ^= static_cast<uint8_t>(c);
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+void loadLocalSettings() {
+  gemini_key = FLIGHTDESK_GEMINI_API_KEY;
+  if (!prefs.begin("flightdesk", true)) return;
+  gemini_key = prefs.getString("gemini_key", gemini_key);
+  const String jokes = prefs.getString("jokes", "");
+  if (prefs.getBytesLength("joke_ids") == sizeof(joke_fingerprints)) {
+    prefs.getBytes("joke_ids", joke_fingerprints, sizeof(joke_fingerprints));
+    joke_fingerprint_used = constrain((int)prefs.getUInt("joke_used", 0), 0, JOKE_FINGERPRINT_COUNT);
+    joke_fingerprint_next = constrain((int)prefs.getUInt("joke_next", 0), 0, JOKE_FINGERPRINT_COUNT - 1);
+  }
+  prefs.end();
+  JsonDocument history;
+  if (!deserializeJson(history, jokes)) {
+    for (JsonVariant joke : history.as<JsonArray>()) {
+      if (joke_history_count == JOKE_HISTORY_SIZE) break;
+      joke_history[joke_history_count++] = joke.as<String>();
+    }
+  }
+  if (!joke_fingerprint_used) {
+    for (int i = 0; i < joke_history_count; ++i) {
+      joke_fingerprints[joke_fingerprint_next++] = jokeFingerprint(joke_history[i]);
+      ++joke_fingerprint_used;
+    }
+  }
+}
+
+bool jokeWasShown(const String &joke) {
+  const uint64_t fingerprint = jokeFingerprint(joke);
+  for (int i = 0; i < joke_fingerprint_used; ++i) {
+    if (joke_fingerprints[i] == fingerprint) return true;
+  }
+  return false;
+}
+
+void rememberJoke(const String &joke) {
+  if (joke_history_count == JOKE_HISTORY_SIZE) {
+    for (int i = 1; i < JOKE_HISTORY_SIZE; ++i) joke_history[i - 1] = joke_history[i];
+    --joke_history_count;
+  }
+  joke_history[joke_history_count++] = joke;
+  joke_fingerprints[joke_fingerprint_next] = jokeFingerprint(joke);
+  joke_fingerprint_next = (joke_fingerprint_next + 1) % JOKE_FINGERPRINT_COUNT;
+  if (joke_fingerprint_used < JOKE_FINGERPRINT_COUNT) ++joke_fingerprint_used;
+  JsonDocument history;
+  JsonArray array = history.to<JsonArray>();
+  for (int i = 0; i < joke_history_count; ++i) array.add(joke_history[i]);
+  String serialized;
+  serializeJson(history, serialized);
+  if (prefs.begin("flightdesk", false)) {
+    prefs.putString("jokes", serialized);
+    prefs.putBytes("joke_ids", joke_fingerprints, sizeof(joke_fingerprints));
+    prefs.putUInt("joke_used", joke_fingerprint_used);
+    prefs.putUInt("joke_next", joke_fingerprint_next);
+    prefs.end();
+  }
+}
+
+void startConfigServer() {
+  config_server.on("/ai", HTTP_GET, []() {
+    config_server.send(200, "text/html; charset=utf-8",
+      "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+      "<title>FlightDesk Xiaozhi</title><h1>Gemini</h1><p>La cle reste sur cet appareil.</p>"
+      "<form method=post><input name=key type=password required autocomplete=off>"
+      "<button>Enregistrer</button></form>");
+  });
+  config_server.on("/ai", HTTP_POST, []() {
+    const String key = config_server.arg("key");
+    if (key.length() < 10 || key.length() > 120) {
+      config_server.send(400, "text/plain", "Cle invalide");
+      return;
+    }
+    if (prefs.begin("flightdesk", false)) {
+      prefs.putString("gemini_key", key);
+      prefs.end();
+      gemini_key = key;
+      config_server.send(200, "text/plain", "Cle Gemini enregistree");
+    } else {
+      config_server.send(500, "text/plain", "Sauvegarde impossible");
+    }
+  });
+  config_server.on("/status", HTTP_GET, []() {
+    JsonDocument status;
+    status["wifi"] = WiFi.status() == WL_CONNECTED;
+    status["gemini_configured"] = gemini_key.length() > 0;
+    status["mode"] = screen_mode;
+    status["anecdote_status"] = anecdote_status;
+    status["joke_status"] = joke_status;
+    status["joke_unique_count"] = joke_fingerprint_used;
+    status["weather_status"] = weather_status;
+    status["forecast_count"] = forecast_count;
+    String body;
+    serializeJson(status, body);
+    config_server.send(200, "application/json", body);
+  });
+  config_server.begin();
 }
 
 float haversine(float lat1, float lon1, float lat2, float lon2) {
@@ -746,7 +894,7 @@ void drawPopup() {
     gfx->setCursor(150, 126);
     gfx->print(photo_status.substring(0, 10));
   }
-  drawButton(154, 160, 34, 24, "IA", false);
+  drawButton(94, 174, 88, 23, "DETAILS", false);
   drawButton(192, 160, 24, 24, "X", false);
 }
 
@@ -756,14 +904,16 @@ void drawBottomControls() {
 }
 
 void drawMenu() {
-  gfx->fillRoundRect(22, 50, 196, 142, 18, rgb565(1, 9, 5));
-  gfx->drawRoundRect(22, 50, 196, 142, 18, COL_DIM);
-  drawCentered("MENU", 67, COL_GREEN, 1);
-  drawButton(72, 84, 96, 28, "RADAR", false);
-  drawButton(28, 122, 84, 28, "RAYON", false);
-  drawButton(128, 122, 84, 28, "NPA", false);
-  drawButton(28, 160, 84, 28, "CENTRER", false);
-  drawButton(128, 160, 84, 28, "IA", false);
+  gfx->fillRoundRect(22, 48, 196, 148, 18, rgb565(1, 9, 5));
+  gfx->drawRoundRect(22, 48, 196, 148, 18, COL_DIM);
+  drawCentered("MENU", 63, COL_GREEN, 1);
+  drawButton(72, 73, 96, 25, "RADAR", false);
+  drawButton(28, 103, 84, 25, "RAYON", false);
+  drawButton(128, 103, 84, 25, "NPA", false);
+  drawButton(28, 133, 84, 25, "CENTRER", false);
+  drawButton(128, 133, 84, 25, "IA", false);
+  drawButton(28, 163, 84, 25, "GAG NUL", false);
+  drawButton(128, 163, 84, 25, "METEO", false);
 }
 
 void drawPostal() {
@@ -822,6 +972,75 @@ void drawAI() {
   drawButton(88, 198, 64, 26, "MENU", false);
 }
 
+void drawFeatureText(const String &answer) {
+  String remaining = answer;
+  remaining.replace("à", "a"); remaining.replace("â", "a"); remaining.replace("ä", "a");
+  remaining.replace("ç", "c"); remaining.replace("é", "e"); remaining.replace("è", "e");
+  remaining.replace("ê", "e"); remaining.replace("ë", "e"); remaining.replace("î", "i");
+  remaining.replace("ï", "i"); remaining.replace("ô", "o"); remaining.replace("ö", "o");
+  remaining.replace("ù", "u"); remaining.replace("û", "u"); remaining.replace("ü", "u");
+  remaining.replace("’", "'"); remaining.replace("–", "-"); remaining.replace("—", "-");
+  int y = 103;
+  gfx->setTextSize(1);
+  gfx->setTextColor(COL_TEXT);
+  while (remaining.length() && y < 167) {
+    int cut = min(28, (int)remaining.length());
+    if ((int)remaining.length() > cut) {
+      int space = remaining.lastIndexOf(' ', cut);
+      if (space > 8) cut = space;
+    }
+    gfx->setCursor(34, y);
+    gfx->print(remaining.substring(0, cut));
+    remaining = remaining.substring(cut);
+    remaining.trim();
+    y += 13;
+  }
+}
+
+const char *weatherLabel(int code) {
+  if (code == 0) return "SOLEIL";
+  if (code <= 3) return "NUAGES";
+  if (code == 45 || code == 48) return "BROUILL.";
+  if ((code >= 71 && code <= 77) || code == 85 || code == 86) return "NEIGE";
+  if (code >= 95) return "ORAGE";
+  if (code >= 51 && code <= 82) return "PLUIE";
+  return "VARIABLE";
+}
+
+void drawFeature() {
+  gfx->fillRoundRect(20, 48, 200, 150, 18, rgb565(1, 9, 5));
+  gfx->drawRoundRect(20, 48, 200, 150, 18, COL_GREEN);
+  drawCentered(screen_mode == "anecdotes" ? "ANECDOTES" : screen_mode == "joke" ? "GAG NUL" : "METEO", 62, COL_GREEN, 1);
+  if (screen_mode == "weather") {
+    gfx->setTextSize(1);
+    if (weather_code >= 0) {
+      drawCentered(String(weather_temperature, 1) + " C  " + weatherLabel(weather_code), 82, COL_TEXT, 1);
+      drawCentered("Hum " + String(weather_humidity) + "%  Vent " + String(weather_wind, 0) + " km/h", 97, COL_DIM, 1);
+      for (int i = 0; i < forecast_count; ++i) {
+        const int y = 118 + i * 16;
+        gfx->setTextColor(COL_GREEN);
+        gfx->setCursor(27, y);
+        gfx->print(forecast[i].date);
+        gfx->setTextColor(COL_TEXT);
+        gfx->setCursor(68, y);
+        gfx->print(weatherLabel(forecast[i].code));
+        gfx->setCursor(132, y);
+        gfx->printf("%.0f/%.0f", forecast[i].high, forecast[i].low);
+        gfx->setCursor(184, y);
+        gfx->printf("%d%%", forecast[i].rain);
+      }
+      drawCentered("Open-Meteo", 164, COL_DIM, 1);
+    } else {
+      drawCentered(weather_status, 108, COL_TEXT, 1);
+    }
+  } else {
+    drawCentered(screen_mode == "anecdotes" ? anecdote_status : joke_status, 83, COL_DIM, 1);
+    drawFeatureText(screen_mode == "anecdotes" ? anecdote_answer : joke_answer);
+  }
+  drawButton(32, 174, 80, 22, screen_mode == "weather" ? "MAJ" : "ENCORE", false);
+  drawButton(128, 174, 80, 22, "RETOUR", false);
+}
+
 void render() {
   drawRadarBase();
   for (int i = 0; i < aircraft_count; ++i) {
@@ -834,6 +1053,7 @@ void render() {
   else if (screen_mode == "settings") drawSettings();
   else if (screen_mode == "postal") drawPostal();
   else if (screen_mode == "ai") drawAI();
+  else if (screen_mode == "anecdotes" || screen_mode == "joke" || screen_mode == "weather") drawFeature();
   else if (selected_index >= 0) drawPopup();
   else drawBottomControls();
   gfx->flush();
@@ -908,7 +1128,7 @@ String localAI(bool selected_only) {
 }
 
 String askGemini(bool selected_only) {
-  String key = FLIGHTDESK_GEMINI_API_KEY;
+  String key = gemini_key;
   if (!key.length()) {
     ai_status = "IA KO: CLE";
     return "Cle Gemini absente dans cette build.";
@@ -924,13 +1144,14 @@ String askGemini(bool selected_only) {
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(6000);
-  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=" + key;
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent";
   http.useHTTP10(true);
   if (!http.begin(client, url)) {
     ai_status = "IA KO: HTTP";
     return "API Gemini inaccessible.";
   }
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-goog-api-key", key);
   http.addHeader("Accept", "application/json");
   http.addHeader("Accept-Encoding", "identity");
   DynamicJsonDocument body(4096);
@@ -959,6 +1180,159 @@ String askGemini(bool selected_only) {
   const char *text = answer_doc["candidates"][0]["content"]["parts"][0]["text"] | "";
   ai_status = "GEMINI";
   return String(text);
+}
+
+String askGeminiText(const String &prompt, float temperature, int max_tokens) {
+  if (!gemini_key.length() || WiFi.status() != WL_CONNECTED) return "";
+  if (time(nullptr) < 1700000000) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    const uint32_t started = millis();
+    while (time(nullptr) < 1700000000 && millis() - started < 8000) delay(200);
+    if (time(nullptr) < 1700000000) return "";
+  }
+  JsonDocument request;
+  request["contents"][0]["parts"][0]["text"] = prompt;
+  request["generationConfig"]["temperature"] = temperature;
+  request["generationConfig"]["maxOutputTokens"] = max_tokens;
+  String body;
+  serializeJson(request, body);
+  WiFiClientSecure client;
+  client.setCACert(kGoogleRoots);
+  HTTPClient http;
+  http.setTimeout(18000);
+  if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")) return "";
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-goog-api-key", gemini_key);
+  const int code = http.POST(body);
+  String answer;
+  if (code == HTTP_CODE_OK) {
+    JsonDocument response;
+    if (!deserializeJson(response, http.getString())) {
+      for (JsonObject part : response["candidates"][0]["content"]["parts"].as<JsonArray>()) {
+        if (part["thought"] | false) continue;
+        const char *text = part["text"] | "";
+        if (text[0]) { answer += text; answer += '\n'; }
+      }
+    }
+  }
+  http.end();
+  Serial.printf("[GEMINI] text HTTP=%d length=%u\n", code, (unsigned)answer.length());
+  answer.trim();
+  return answer;
+}
+
+void updateAnecdotes(bool more) {
+  if (!more) {
+    if (selected_index < 0 || selected_index >= aircraft_count) return;
+    anecdote_aircraft = aircraft[selected_index];
+    previous_anecdote = "";
+  } else {
+    if (anecdote_answer.length()) previous_anecdote = anecdote_answer;
+  }
+  screen_mode = "anecdotes";
+  anecdote_answer = "";
+  anecdote_status = gemini_key.length() ? "GEMINI..." : "CLE GEMINI ABSENTE";
+  render();
+  String prompt = "En francais, donne exactement deux anecdotes courtes et factuelles sur le modele ou la compagnie de cet avion. "
+                  "Maximum 230 caracteres au total, sans titre ni markdown. N'invente rien sur cet exemplaire. ";
+  prompt += "Vol: " + anecdote_aircraft.callsign;
+  prompt += "; type: " + anecdote_aircraft.type;
+  prompt += "; immatriculation: " + anecdote_aircraft.registration;
+  prompt += "; compagnie: " + anecdote_aircraft.operator_name;
+  if (previous_anecdote.length()) prompt += "; anecdotes deja affichees a eviter: " + previous_anecdote;
+  anecdote_answer = askGeminiText(prompt, 0.5f, 230);
+  if (anecdote_answer.length() > 230) anecdote_answer = anecdote_answer.substring(0, 230);
+  anecdote_status = anecdote_answer.length() ? "ANECDOTES GEMINI" :
+                    gemini_key.length() ? "GEMINI INDISPONIBLE" : "CLE GEMINI ABSENTE";
+}
+
+void updateJoke() {
+  screen_mode = "joke";
+  joke_answer = "";
+  joke_status = gemini_key.length() ? "GEMINI..." : "CLE GEMINI ABSENTE";
+  render();
+  String prompt = "Raconte une seule blague volontairement tres nulle sur les avions, en francais. "
+                  "Deux phrases et 220 caracteres maximum. Sans titre, markdown ni emoji. "
+                  "Invente une chute differente de toutes ces blagues: ";
+  for (int i = 0; i < joke_history_count; ++i) prompt += "\n- " + joke_history[i];
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    String candidate = askGeminiText(prompt, 1.0f, 160);
+    if (!candidate.length()) {
+      joke_status = gemini_key.length() ? "GEMINI INDISPONIBLE" : "CLE GEMINI ABSENTE";
+      return;
+    }
+    if (candidate.length() > 220) candidate = candidate.substring(0, 220);
+    if (jokeWasShown(candidate)) {
+      prompt += "\nLa derniere tentative etait un doublon. Trouve une autre chute.";
+      continue;
+    }
+    joke_answer = candidate;
+    joke_status = "GAG CERTIFIE NUL";
+    rememberJoke(candidate);
+    return;
+  }
+  joke_status = "GAG DEJA ENTENDU";
+}
+
+void updateWeather() {
+  screen_mode = "weather";
+  weather_status = "CHARGEMENT METEO...";
+  weather_code = -1;
+  forecast_count = 0;
+  render();
+  if (WiFi.status() != WL_CONNECTED) {
+    weather_status = "WIFI HORS LIGNE";
+    return;
+  }
+  String url = "https://api.open-meteo.com/v1/forecast?latitude=" + String(settings.lat, 5) +
+               "&longitude=" + String(settings.lon, 5) +
+               "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code"
+               "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+               "&timezone=auto&forecast_days=4";
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(12000);
+  if (!http.begin(client, url)) {
+    weather_status = "CONNEXION IMPOSSIBLE";
+    return;
+  }
+  const int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    JsonDocument response;
+    if (!deserializeJson(response, http.getString())) {
+      JsonObject current = response["current"].as<JsonObject>();
+      JsonObject daily = response["daily"].as<JsonObject>();
+      if (!current.isNull() && !daily.isNull() && !current["weather_code"].isNull()) {
+        weather_temperature = current["temperature_2m"].as<float>();
+        weather_humidity = current["relative_humidity_2m"].as<int>();
+        weather_wind = current["wind_speed_10m"].as<float>();
+        weather_code = current["weather_code"].as<int>();
+        JsonArray dates = daily["time"].as<JsonArray>();
+        JsonArray codes = daily["weather_code"].as<JsonArray>();
+        JsonArray highs = daily["temperature_2m_max"].as<JsonArray>();
+        JsonArray lows = daily["temperature_2m_min"].as<JsonArray>();
+        JsonArray rain = daily["precipitation_probability_max"].as<JsonArray>();
+        if (!dates.isNull() && !codes.isNull() && !highs.isNull() && !lows.isNull() && !rain.isNull()) {
+          for (int i = 1; i <= 3; ++i) {
+            if (i >= dates.size() || i >= codes.size() || i >= highs.size() || i >= lows.size() || i >= rain.size()) break;
+            const char *date = dates[i] | "";
+            if (strlen(date) != 10 || codes[i].isNull() || highs[i].isNull() || lows[i].isNull() || rain[i].isNull()) break;
+            ForecastDay &day = forecast[forecast_count++];
+            day.date = String(date).substring(8, 10) + "/" + String(date).substring(5, 7);
+            day.code = codes[i].as<int>();
+            day.high = highs[i].as<float>();
+            day.low = lows[i].as<float>();
+            day.rain = rain[i].as<int>();
+          }
+        }
+        weather_status = forecast_count == 3 ? "METEO ACTUALISEE" : "PREVISIONS INCOMPLETES";
+      }
+    }
+  }
+  http.end();
+  if (weather_code < 0) weather_status = "METEO INDISPONIBLE";
+  Serial.printf("[METEO] HTTP=%d jours=%d\n", code, forecast_count);
 }
 
 String recordVoicePcmBase64() {
@@ -1077,7 +1451,7 @@ String recordVoicePcmBase64() {
 String askGeminiVoice(bool selected_only) {
   if (ai_busy) return "IA deja en cours.";
   ai_busy = true;
-  String key = FLIGHTDESK_GEMINI_API_KEY;
+  String key = gemini_key;
   if (!key.length()) {
     ai_status = "IA KO: CLE";
     ai_busy = false;
@@ -1111,7 +1485,7 @@ String askGeminiVoice(bool selected_only) {
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(12000);
-  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key;
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
   http.useHTTP10(true);
   if (!http.begin(client, url)) {
     ai_status = "IA KO: HTTP";
@@ -1119,6 +1493,7 @@ String askGeminiVoice(bool selected_only) {
     return "API Gemini inaccessible.";
   }
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-goog-api-key", key);
   http.addHeader("Accept", "application/json");
   http.addHeader("Accept-Encoding", "identity");
   String payload;
@@ -1171,15 +1546,26 @@ bool readTouch(int &x, int &y) {
 }
 
 void handleTouch(int x, int y) {
-  if (selected_index >= 0) {
+  if (screen_mode == "anecdotes" || screen_mode == "joke" || screen_mode == "weather") {
+    if (y >= 168 && y <= 198) {
+      if (x >= 28 && x <= 114) {
+        if (screen_mode == "anecdotes") updateAnecdotes(true);
+        else if (screen_mode == "joke") updateJoke();
+        else updateWeather();
+      } else if (x >= 124 && x <= 212) {
+        screen_mode = "radar";
+        selected_index = -1;
+      }
+    }
+    return;
+  }
+  if (screen_mode == "radar" && selected_index >= 0) {
     if (x >= 190 && x <= 224 && y >= 154 && y <= 194) {
       selected_index = -1;
       return;
     }
-    if (x >= 148 && x <= 190 && y >= 154 && y <= 194) {
-      ai_answer = askGeminiVoice(true);
-      screen_mode = "ai";
-      if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
+    if (x >= 90 && x <= 186 && y >= 170 && y <= 198) {
+      updateAnecdotes(false);
       return;
     }
   }
@@ -1195,19 +1581,21 @@ void handleTouch(int x, int y) {
     return;
   }
   if (screen_mode == "menu") {
-    if (x >= 28 && x <= 112 && y >= 122 && y <= 150) screen_mode = "settings";
-    else if (x >= 128 && x <= 212 && y >= 122 && y <= 150) screen_mode = "postal";
-    else if (x >= 28 && x <= 112 && y >= 160 && y <= 188) {
+    if (x >= 28 && x <= 112 && y >= 103 && y <= 128) screen_mode = "settings";
+    else if (x >= 128 && x <= 212 && y >= 103 && y <= 128) screen_mode = "postal";
+    else if (x >= 28 && x <= 112 && y >= 133 && y <= 158) {
       applyPostal(settings.postal);
       last_traffic_ms = 0;
       fetchTraffic();
       screen_mode = "radar";
     }
-    else if (x >= 128 && x <= 212 && y >= 160 && y <= 188) {
+    else if (x >= 128 && x <= 212 && y >= 133 && y <= 158) {
       ai_answer = askGeminiVoice(false);
       screen_mode = "ai";
       if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
-    } else if (x >= 72 && x <= 168 && y >= 84 && y <= 112) screen_mode = "radar";
+    } else if (x >= 28 && x <= 112 && y >= 163 && y <= 188) updateJoke();
+    else if (x >= 128 && x <= 212 && y >= 163 && y <= 188) updateWeather();
+    else if (x >= 72 && x <= 168 && y >= 73 && y <= 98) screen_mode = "radar";
     return;
   }
   if (screen_mode == "postal") {
@@ -1274,6 +1662,7 @@ void setup() {
   delay(20);
   digitalWrite(PIN_TOUCH_RST, HIGH);
   Wire.begin(PIN_I2C_SDA_TOUCH, PIN_I2C_SCL_TOUCH, 50000);
+  loadLocalSettings();
 
   if (!canvas->begin(40000000)) {
     display->begin(40000000);
@@ -1292,12 +1681,14 @@ void setup() {
   }
   ArduinoOTA.setHostname("flightdesk-ball-v2");
   ArduinoOTA.begin();
+  startConfigServer();
   applyPostal(settings.postal);
   fetchTraffic();
 }
 
 void loop() {
   ArduinoOTA.handle();
+  config_server.handleClient();
   serviceSpeech();
   servicePendingSpeech();
   uint32_t now = millis();
