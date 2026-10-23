@@ -39,7 +39,6 @@ constexpr int PHOTO_H = 44;
 constexpr bool PHOTO_DOWNLOAD_ENABLED = true;
 constexpr int VOICE_SAMPLE_RATE = 16000;
 constexpr int VOICE_RECORD_MS = 2200;
-constexpr bool AI_SPEAK_RESPONSE = false;
 
 constexpr int PIN_I2C_SDA_TOUCH = 11;
 constexpr int PIN_I2C_SCL_TOUCH = 7;
@@ -133,6 +132,7 @@ int pending_photo_index = -1;
 String speech_url;
 String pending_speech_text;
 uint32_t pending_speech_ms = 0;
+String speech_status = "PRET";
 bool ai_busy = false;
 String gemini_key;
 Aircraft anecdote_aircraft;
@@ -164,6 +164,8 @@ int weather_code = -1;
 String weather_status;
 int last_mic_peak = 0;
 int last_mic_rms = 0;
+
+bool speechActive();
 
 uint8_t *allocAudioBuffer(size_t size) {
   if (psramFound()) {
@@ -347,6 +349,8 @@ void startConfigServer() {
     status["joke_unique_count"] = joke_fingerprint_used;
     status["weather_status"] = weather_status;
     status["forecast_count"] = forecast_count;
+    status["speech_status"] = speech_status;
+    status["speech_active"] = speechActive();
     String body;
     serializeJson(status, body);
     config_server.send(200, "application/json", body);
@@ -476,6 +480,16 @@ void stopSpeech() {
   digitalWrite(PIN_SPEAKER_ENABLE, LOW);
 }
 
+bool speechActive() {
+  return pending_speech_text.length() || (speech_mp3 && speech_mp3->isRunning());
+}
+
+void cancelSpeech() {
+  pending_speech_text = "";
+  stopSpeech();
+  speech_status = "ARRETE";
+}
+
 bool initAudioCodec() {
   if (audio_codec_ready) return true;
   audio_wire.begin(PIN_I2C_SDA_AUDIO, PIN_I2C_SCL_AUDIO, 100000);
@@ -521,36 +535,38 @@ String speechText(const String &text) {
   clean.replace("km/h", " kilometres heure");
   clean.replace(" km", " kilometres");
   clean.trim();
-  if (clean.length() > 180) clean = clean.substring(0, 180);
   return clean;
 }
 
-void startSpeech(const String &text) {
-  if (WiFi.status() != WL_CONNECTED) return;
+bool startSpeech(const String &text) {
+  if (WiFi.status() != WL_CONNECTED) {
+    speech_status = "WIFI HORS LIGNE";
+    return false;
+  }
   String clean = speechText(text);
-  if (!clean.length()) return;
+  if (!clean.length()) return false;
   if (!initAudioCodec()) {
-    ai_status = "VOCAL KO";
-    return;
+    speech_status = "AUDIO INDISPONIBLE";
+    return false;
   }
   if (ESP.getFreeHeap() < 90000) {
-    ai_status = "VOCAL OFF";
-    return;
+    speech_status = "MEMOIRE INSUFFISANTE";
+    return false;
   }
   stopSpeech();
   speech_url = "http://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=fr&q=" + urlEncode(clean);
   speech_file = new (std::nothrow) AudioFileSourceHTTPStream(speech_url.c_str());
   if (!speech_file) {
-    ai_status = "VOCAL OFF";
-    return;
+    speech_status = "LECTURE IMPOSSIBLE";
+    return false;
   }
   speech_buffer = new (std::nothrow) AudioFileSourceBuffer(speech_file, 2048);
   speech_out = new (std::nothrow) AudioOutputI2S();
   speech_mp3 = new (std::nothrow) AudioGeneratorMP3();
   if (!speech_buffer || !speech_out || !speech_mp3) {
     stopSpeech();
-    ai_status = "VOCAL OFF";
-    return;
+    speech_status = "LECTURE IMPOSSIBLE";
+    return false;
   }
   speech_out->SetPinout(PIN_I2S_BCLK, PIN_I2S_LRCLK, PIN_I2S_DOUT, PIN_I2S_MCLK);
   speech_out->SetMclk(true);
@@ -559,8 +575,11 @@ void startSpeech(const String &text) {
   digitalWrite(PIN_SPEAKER_ENABLE, HIGH);
   if (!speech_mp3->begin(speech_buffer, speech_out)) {
     stopSpeech();
-    ai_status = "VOCAL OFF";
+    speech_status = "LECTURE IMPOSSIBLE";
+    return false;
   }
+  speech_status = "LECTURE";
+  return true;
 }
 
 void serviceSpeech() {
@@ -573,17 +592,31 @@ void serviceSpeech() {
 }
 
 void queueSpeech(const String &text) {
+  cancelSpeech();
   pending_speech_text = speechText(text);
-  pending_speech_ms = millis() + 900;
+  pending_speech_ms = millis() + 100;
+  if (pending_speech_text.length()) speech_status = "CHARGEMENT AUDIO";
 }
 
 void servicePendingSpeech() {
   if (!pending_speech_text.length()) return;
   if (speech_mp3 && speech_mp3->isRunning()) return;
   if ((int32_t)(millis() - pending_speech_ms) < 0) return;
-  String text = pending_speech_text;
-  pending_speech_text = "";
-  startSpeech(text);
+  int cut = min(170, (int)pending_speech_text.length());
+  if (cut < (int)pending_speech_text.length()) {
+    const int space = pending_speech_text.lastIndexOf(' ', cut);
+    if (space > 80) cut = space;
+  }
+  String chunk = pending_speech_text.substring(0, cut);
+  pending_speech_text = pending_speech_text.substring(cut);
+  pending_speech_text.trim();
+  if (!startSpeech(chunk)) pending_speech_text = "";
+}
+
+void toggleSpeech(const String &text) {
+  if (speechActive()) cancelSpeech();
+  else if (text.length()) queueSpeech(text);
+  else speech_status = "AUCUN TEXTE";
 }
 
 int jpegPhotoDraw(JPEGDRAW *pDraw) {
@@ -957,7 +990,7 @@ void drawAI() {
   gfx->setTextSize(1);
   int y = 106;
   String remaining = ai_answer;
-  while (remaining.length() && y < 176) {
+  while (remaining.length() && y < 160) {
     int cut = min(28, (int)remaining.length());
     if ((int)remaining.length() > cut) {
       int space = remaining.lastIndexOf(' ', cut);
@@ -969,7 +1002,11 @@ void drawAI() {
     remaining.trim();
     y += 14;
   }
-  drawButton(88, 198, 64, 26, "MENU", false);
+  drawButton(34, 165, 80, 25, speechActive() ? "STOP" : "ECOUTER", speechActive());
+  drawButton(126, 165, 80, 25, "MENU", false);
+  if (speech_status != "PRET" && speech_status != "LECTURE" && speech_status != "ARRETE") {
+    drawCentered(speech_status, 194, COL_DIM, 1);
+  }
 }
 
 void drawFeatureText(const String &answer) {
@@ -1007,6 +1044,18 @@ const char *weatherLabel(int code) {
   return "VARIABLE";
 }
 
+String weatherSpeech() {
+  if (weather_code < 0) return "";
+  String summary = "Meteo actuelle: " + String(weather_temperature, 0) + " degres, " +
+                   String(weatherLabel(weather_code)) + ". Vent " + String(weather_wind, 0) +
+                   " kilometres heure. ";
+  for (int i = 0; i < forecast_count; ++i) {
+    summary += forecast[i].date + ": " + String(weatherLabel(forecast[i].code)) + ", " +
+               String(forecast[i].high, 0) + " a " + String(forecast[i].low, 0) + " degres. ";
+  }
+  return summary;
+}
+
 void drawFeature() {
   gfx->fillRoundRect(20, 48, 200, 150, 18, rgb565(1, 9, 5));
   gfx->drawRoundRect(20, 48, 200, 150, 18, COL_GREEN);
@@ -1037,8 +1086,12 @@ void drawFeature() {
     drawCentered(screen_mode == "anecdotes" ? anecdote_status : joke_status, 83, COL_DIM, 1);
     drawFeatureText(screen_mode == "anecdotes" ? anecdote_answer : joke_answer);
   }
-  drawButton(32, 174, 80, 22, screen_mode == "weather" ? "MAJ" : "ENCORE", false);
-  drawButton(128, 174, 80, 22, "RETOUR", false);
+  drawButton(29, 174, 53, 22, screen_mode == "weather" ? "MAJ" : "ENCORE", false);
+  drawButton(87, 174, 66, 22, speechActive() ? "STOP" : "ECOUTER", speechActive());
+  drawButton(158, 174, 53, 22, "RETOUR", false);
+  if (speech_status != "PRET" && speech_status != "LECTURE") {
+    drawCentered(speech_status, 201, COL_DIM, 1);
+  }
 }
 
 void render() {
@@ -1222,6 +1275,7 @@ String askGeminiText(const String &prompt, float temperature, int max_tokens) {
 }
 
 void updateAnecdotes(bool more) {
+  cancelSpeech();
   if (!more) {
     if (selected_index < 0 || selected_index >= aircraft_count) return;
     anecdote_aircraft = aircraft[selected_index];
@@ -1247,6 +1301,7 @@ void updateAnecdotes(bool more) {
 }
 
 void updateJoke() {
+  cancelSpeech();
   screen_mode = "joke";
   joke_answer = "";
   joke_status = gemini_key.length() ? "GEMINI..." : "CLE GEMINI ABSENTE";
@@ -1275,6 +1330,7 @@ void updateJoke() {
 }
 
 void updateWeather() {
+  cancelSpeech();
   screen_mode = "weather";
   weather_status = "CHARGEMENT METEO...";
   weather_code = -1;
@@ -1548,11 +1604,15 @@ bool readTouch(int &x, int &y) {
 void handleTouch(int x, int y) {
   if (screen_mode == "anecdotes" || screen_mode == "joke" || screen_mode == "weather") {
     if (y >= 168 && y <= 198) {
-      if (x >= 28 && x <= 114) {
+      if (x >= 29 && x <= 82) {
         if (screen_mode == "anecdotes") updateAnecdotes(true);
         else if (screen_mode == "joke") updateJoke();
         else updateWeather();
-      } else if (x >= 124 && x <= 212) {
+      } else if (x >= 87 && x <= 153) {
+        toggleSpeech(screen_mode == "anecdotes" ? anecdote_answer :
+                     screen_mode == "joke" ? joke_answer : weatherSpeech());
+      } else if (x >= 158 && x <= 211) {
+        cancelSpeech();
         screen_mode = "radar";
         selected_index = -1;
       }
@@ -1572,7 +1632,6 @@ void handleTouch(int x, int y) {
   if (screen_mode == "radar" && selected_index < 0 && x >= 45 && x <= 113 && y >= 192 && y <= 230) {
     ai_answer = askGeminiVoice(false);
     screen_mode = "ai";
-    if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
     return;
   }
   if (screen_mode == "radar" && selected_index < 0 && x >= 127 && x <= 195 && y >= 192 && y <= 230) {
@@ -1592,7 +1651,6 @@ void handleTouch(int x, int y) {
     else if (x >= 128 && x <= 212 && y >= 133 && y <= 158) {
       ai_answer = askGeminiVoice(false);
       screen_mode = "ai";
-      if (AI_SPEAK_RESPONSE) queueSpeech(ai_answer);
     } else if (x >= 28 && x <= 112 && y >= 163 && y <= 188) updateJoke();
     else if (x >= 128 && x <= 212 && y >= 163 && y <= 188) updateWeather();
     else if (x >= 72 && x <= 168 && y >= 73 && y <= 98) screen_mode = "radar";
@@ -1628,7 +1686,11 @@ void handleTouch(int x, int y) {
     return;
   }
   if (screen_mode == "ai") {
-    screen_mode = "menu";
+    if (x >= 34 && x <= 114 && y >= 165 && y <= 190) toggleSpeech(ai_answer);
+    else if (x >= 126 && x <= 206 && y >= 165 && y <= 190) {
+      cancelSpeech();
+      screen_mode = "menu";
+    }
     return;
   }
   int best = -1;

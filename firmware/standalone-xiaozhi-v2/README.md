@@ -59,6 +59,8 @@ This standalone firmware includes ArduinoOTA with hostname
   from the last 128 jokes, including across reboots.
 - **MÉTÉO** shows current conditions and a three-day forecast from Open-Meteo.
 - Gemini voice assistant for nearby traffic.
+- **ÉCOUTER / STOP** reads the assistant reply, anecdotes, jokes and a compact
+  weather forecast through the Xiaozhi speaker. Long text is played in parts.
 - Gemini key setup on `http://<xiaozhi-ip>/ai`; the key is stored on the device.
 - Local stylized green map watermark.
 - ArduinoOTA for later standalone updates.
